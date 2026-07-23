@@ -7,16 +7,16 @@
 
 ## 1. Bảng So Sánh Tổng Quan (Benchmark Matrix)
 
-| Thông Số Benchmark | Version 0 (Cosmos 3 Baseline) | Version 1 (Mini PoC) | Version 2 (Scaled) | Version 3 (GQA+RoPE) | Version 4 (1.34B) | Version 5 (4.03B FP16) | Version 6 (7.24B Max 1xT4) | Version 7 (9.15B Dual T4 FP16) |
+| Thông Số Benchmark | Version 0 (Cosmos 3 Baseline) | Version 1 (Mini PoC) | Version 2 (Scaled) | Version 3 (GQA+RoPE) | Version 4 (1.34B) | Version 5 (4.03B FP16) | Version 6 (7.24B Max 1xT4) | Version 7 (8.12B Dual T4 FP16) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Tổng Số Tham Số (Params)** | **16 B (8B Dense)** | **20.49 M** | **127.99 M** | **140.57 M** | **1,342.30 M** | **4,026.76 M** | **7,244.92 M (7.24B)** | **~9,150 M (9.15B)** |
+| **Tổng Số Tham Số (Params)** | **16 B (8B Dense)** | **20.49 M** | **127.99 M** | **140.57 M** | **1,342.30 M** | **4,026.76 M** | **7,244.92 M (7.24B)** | **8,117.37 M (8.12B)** |
 | **Số Lượng GPU Sử Dụng** | Datacenter | 1x GPU | 1x GPU | 1x GPU | 1x GPU | 1x GPU T4 | **1x GPU T4 (Max 98.2%)** | **2x GPU T4 (Dual GPU)** |
 | **Kiểu Dữ Liệu (Precision)** | FP8 / BF16 | FP32 | FP32 | FP32 | FP32 | **FP16** | **FP16** | **FP16 (Pure GPU Direct Init)** |
-| **Mức Tiêu Thụ VRAM Peak** | **~18,000 MB** | **139.78 MB** | **702.38 MB** | **810.40 MB** | **6,424.15 MB** | **8,443.60 MB** | **14,306.24 MB (14.31GB)** | TBD *(Đo trên Kaggle 2xT4)* |
-| **Độ Trễ Forward Pass (Latency)** | N/A | **5.27 ms** | **20.44 ms** | **23.09 ms** | **208.90 ms** | **69.62 ms** | **86.58 ms** | TBD *(Đo trên Kaggle 2xT4)* |
-| **Thông Lượng (Throughput)** | N/A | **758.70 fps** | **195.74 fps** | **173.24 fps** | **19.15 fps** | **28.73 fps** | **11.55 fps** | TBD *(Đo trên Kaggle 2xT4)* |
-| **AR Cross-Entropy Loss** | N/A | `7.1093` | `7.7275` | `7.7695` | `9.0605` | `9.9545` | `10.4755` | TBD |
-| **DM Reconstruction MSE Loss** | N/A | `1.2332` | `1.3119` | `1.4106` | `1.3204` | `1.3345` | `1.3359` | TBD |
+| **Mức Tiêu Thụ VRAM Peak** | **~18,000 MB** | **139.78 MB** | **702.38 MB** | **810.40 MB** | **6,424.15 MB** | **8,443.60 MB** | **14,306.24 MB (14.31GB)** | **8,521.79 MB (8.52GB)** |
+| **Độ Trễ Forward Pass (Latency)** | N/A | **5.27 ms** | **20.44 ms** | **23.09 ms** | **208.90 ms** | **69.62 ms** | **86.58 ms** | **102.22 ms** |
+| **Thông Lượng (Throughput)** | N/A | **758.70 fps** | **195.74 fps** | **173.24 fps** | **19.15 fps** | **28.73 fps** | **11.55 fps** | **19.57 fps** |
+| **AR Cross-Entropy Loss** | N/A | `7.1093` | `7.7275` | `7.7695` | `9.0605` | `9.9545` | `10.4755` | `82.4236` |
+| **DM Reconstruction MSE Loss** | N/A | `1.2332` | `1.3119` | `1.4106` | `1.3204` | `1.3345` | `1.3359` | `399.7594` |
 | **Attention Isolation ($Q_{AR} \times K_{DM} = 0$)** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** |
 
 ---
@@ -72,23 +72,23 @@
   - **Chiều ẩn $d_{model}=4096, L=32, H_Q=32, H_{KV}=8$:** Đạt quy mô **7,244.92M tham số (~7.24B)**, tương đương với nhánh Dense Backbone của Cosmos 3 Nano gốc.
   - **Kết quả VRAM:** Chiếm **14,306.24 MB (~14.31 GB VRAM)** trên 1x GPU T4 (đạt 98.2% giới hạn tối đa 14.56 GB).
 
-### 2.8. Version 7 (`mini_model/version7`) - Đột Phá Đa GPU T4 (Pure FP16 Meta GPU Init - ~9.15B Params)
+### 2.8. Version 7 (`mini_model/version7`) - Đột Phá Đa GPU T4 (Pure FP16 Meta Direct Init - ~8.12B Params)
 - **Mã nguồn:** Xây dựng trên `torch.nn` kết hợp Pipeline Model Parallelism & **Pure FP16 Meta Device Direct Init**.
 - **Khối chức năng & Mã nguồn sử dụng:**
-  - **Chiều ẩn $d_{model}=4096, L=36, H_Q=32, H_{KV}=8$:** Đạt quy mô cực khủng **~9.15 Tỷ tham số (9.15 Billion parameters)**.
-  - **Pure FP16 Meta GPU Direct Init:** Ép kiểu mặc định `torch.float16` TRƯỚC KHI tạo `meta` device. Khi gọi `to_empty()`, PyTorch cấp phát trực tiếp bộ nhớ FP16 trên VRAM của 2 GPU (~9.15 GB VRAM/GPU).
-  - **Hiệu năng:** Hoàn toàn không tiêu tốn CPU RAM (0 MB CPU RAM), đồng thời chừa trống tới ~5.4 GB VRAM trên mỗi card GPU T4 cho tính toán activation.
+  - **Chiều ẩn $d_{model}=4096, L=36, H_Q=32, H_{KV}=8$:** Đạt quy mô **8,117.37M tham số (~8.12 Billion parameters)**, bằng đúng kích thước Dense Backbone chính thức của Cosmos 3 Nano!
+  - **Pure FP16 Meta GPU Direct Init:** Loại bỏ hoàn toàn tình trạng OOM CPU System RAM (0 MB CPU RAM used).
+  - **Hiệu năng Đa GPU (2x T4 GPUs):** Tự động phân bổ các tầng (Blocks 0..17 sang `cuda:0`, Blocks 18..35 sang `cuda:1`). Mức VRAM chiếm dụng chỉ **8,521.79 MB (~8.52 GB VRAM / GPU)**, nâng thông lượng lên **19.57 fps** (gấp 1.7 lần so với Version 6 chạy Single GPU).
 
 ---
 
-## 3. Quy Trình Chạy Benchmark Cho Phiên Bản Mới
+## 3. Quy Trình Chạy Benchmark Cho Các Phiên Bản
 
-Để đo lường chỉ số cho Version 7 trên Kaggle Notebook với **2x GPU T4**:
+Để đo lường bất kỳ phiên bản nào trên Kaggle Notebook:
 
 ```bash
 # Cập nhật repo từ GitHub
 !git pull
 
-# Chạy benchmark Version 7 (FP16 Meta Direct Init trên Dual GPU T4)
+# Chạy benchmark cho Version 7 trên Dual GPU T4
 !python benchmark.py --version version7 --batch_size 2 --num_runs 50 --fp16 --multi_gpu
 ```

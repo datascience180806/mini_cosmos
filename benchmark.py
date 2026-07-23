@@ -76,24 +76,17 @@ def run_benchmark(args) -> Dict[str, Any]:
     Cosmos3ToyModel, Cosmos3Config = load_model_version(args.version)
     config = Cosmos3Config()
 
-    model = Cosmos3ToyModel(config)
-
-    if device.type == "cuda":
-        if use_fp16:
-            print("[INFO] Kích hoạt FP16 Half Precision Mode.")
-            model = model.half()
-
-        # If model supports layer-wise pipeline parallelism across GPUs
-        if hasattr(model, "dispatch_pipeline_parallel") and num_gpus > 1:
-            print(f"[INFO] Kích hoạt Device Pipeline Parallelism trên {num_gpus} GPUs (Phân bổ tầng giữa GPU 0 & GPU 1)...")
-            model.dispatch_pipeline_parallel()
-        else:
-            model = model.to(device)
-            if (args.multi_gpu or num_gpus > 1) and num_gpus > 1:
-                print(f"[INFO] Dual/Multi-GPU Parallelism (DataParallel) được kích hoạt trên {num_gpus} GPUs!")
-                model = nn.DataParallel(model)
+    # Meta Device Initialization for ultra-large models (0 MB CPU RAM used)
+    if hasattr(Cosmos3ToyModel, "create_meta_model") and device.type == "cuda":
+        print("[INFO] Kích hoạt Meta Device Init (0 MB CPU RAM used - Khởi tạo trực tiếp trên GPU VRAM).")
+        model = Cosmos3ToyModel.create_meta_model(config, fp16=use_fp16)
     else:
-        model = model.to(device)
+        model = Cosmos3ToyModel(config)
+        if device.type == "cuda":
+            if use_fp16:
+                print("[INFO] Kích hoạt FP16 Half Precision Mode.")
+                model = model.half()
+            model = model.to(device)
 
     # 1. Parameter Count
     raw_model = model.module if isinstance(model, nn.DataParallel) else model

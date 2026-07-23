@@ -170,9 +170,8 @@ class Cosmos3Block(nn.Module):
 class Cosmos3ToyModel(nn.Module):
     """
     Mô hình Cosmos 3 Version 7 (Dual GPU Model Parallelism ~10.08 Billion parameters):
+    - Hỗ trợ khởi tạo thiết bị Meta (Meta Device Init) tiêu tốn 0 MB CPU RAM.
     - Phân bổ các tầng (Pipeline Model Parallelism) chia đều qua 2 card GPU T4.
-    - cuda:0 chứa layers 0..17, cuda:1 chứa layers 18..35.
-    - Bỏ qua hoàn toàn giới hạn VRAM 14.5GB của 1 GPU đơn lẻ.
     """
     def __init__(self, config: Cosmos3Config):
         super().__init__()
@@ -190,28 +189,52 @@ class Cosmos3ToyModel(nn.Module):
         self.ar_head = nn.Linear(config.hidden_dim, config.vocab_size, bias=False)
         self.dm_vision_head = nn.Linear(config.hidden_dim, config.latent_dim)
 
-    def dispatch_pipeline_parallel(self):
-        """Phân bổ các layers qua 2 card GPU T4 (cuda:0 & cuda:1)."""
-        if torch.cuda.device_count() >= 2:
-            half = len(self.blocks) // 2
-            dev0 = torch.device("cuda:0")
-            dev1 = torch.device("cuda:1")
+    @classmethod
+    def create_meta_model(cls, config: Cosmos3Config, fp16: bool = True):
+        """
+        Tạo mô hình trên 'meta' device (0 MB System RAM), sau đó allocate trực tiếp trên 2x GPU T4.
+        """
+        num_gpus = torch.cuda.device_count()
+        dev0 = torch.device("cuda:0") if num_gpus > 0 else torch.device("cpu")
+        dev1 = torch.device("cuda:1") if num_gpus > 1 else dev0
 
-            self.ar_embedding.to(dev0)
-            self.dm_vision_proj.to(dev0)
-            self.audio_proj.to(dev0)
-            self.action_proj.to(dev0)
+        # Step 1: Create architecture shell on 'meta' device (0 bytes memory allocated)
+        with torch.device("meta"):
+            model = cls(config)
 
-            for idx, block in enumerate(self.blocks):
-                if idx < half:
-                    block.to(dev0)
-                else:
-                    block.to(dev1)
+        # Step 2: Allocate memory DIRECTLY on GPU devices (Bypassing CPU RAM)
+        half = len(model.blocks) // 2
 
-            self.norm_f.to(dev0)
-            self.ar_head.to(dev0)
-            self.dm_vision_head.to(dev0)
-            print(f"[INFO] Dispatched {half} blocks to GPU 0 and {len(self.blocks) - half} blocks to GPU 1!")
+        model.ar_embedding = model.ar_embedding.to_empty(device=dev0)
+        model.dm_vision_proj = model.dm_vision_proj.to_empty(device=dev0)
+        model.audio_proj = model.audio_proj.to_empty(device=dev0)
+        model.action_proj = model.action_proj.to_empty(device=dev0)
+
+        for idx, block in enumerate(model.blocks):
+            target_dev = dev0 if (idx < half or num_gpus < 2) else dev1
+            block.to_empty(device=target_dev)
+
+        model.norm_f = model.norm_f.to_empty(device=dev0)
+        model.ar_head = model.ar_head.to_empty(device=dev0)
+        model.dm_vision_head = model.dm_vision_head.to_empty(device=dev0)
+
+        # Step 3: Fill parameters on GPU with standard initialization
+        def _init_weights(m):
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, std=0.02)
+            elif isinstance(m, nn.Embedding):
+                nn.init.normal_(m.weight, std=0.02)
+            elif isinstance(m, RMSNorm):
+                nn.init.ones_(m.weight)
+
+        with torch.no_grad():
+            model.apply(_init_weights)
+
+        if fp16 and num_gpus > 0:
+            model = model.half()
+
+        print(f"[SUCCESS] Khoi tao Meta Model ~10.08B Params truc tiep tren GPU (0 MB CPU RAM)! Dispatched across {num_gpus} GPUs.")
+        return model
 
     def forward(
         self,
@@ -288,7 +311,7 @@ class Cosmos3ToyModel(nn.Module):
 
 if __name__ == "__main__":
     config = Cosmos3Config()
-    model = Cosmos3ToyModel(config)
+    model = Cosmos3ToyModel.create_meta_model(config)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"[SUCCESS] Khoi tao Cosmos 3 Version 7 Dual GPU Model (~10.08B Params) thanh cong!")
     print(f"-> Tong so luong tham so (Total Parameters): {total_params / 1e6:.2f}M ({total_params / 1e9:.2f}B)")

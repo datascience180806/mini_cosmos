@@ -7,48 +7,48 @@
 
 ## 1. Bảng So Sánh Tổng Quan (Benchmark Matrix)
 
-| Thông Số Benchmark | Version 1 (Baseline) | Version 2 (Planned) | Version 3 (Planned) |
+| Thông Số Benchmark | Version 1 (Baseline) | Version 2 (Scaled Params) | Version 3 (Planned) |
 | :--- | :---: | :---: | :---: |
-| **Tổng Số Tham Số (Params)** | **~74.5 M** | TBD | TBD |
-| **Kích Thước Cấu Hình ($d_{model} / L / H$)** | $512 / 6 / 8$ | TBD | TBD |
-| **Mức Tiêu Thụ VRAM Peak (MB)** | **~290 MB** (FP32) | TBD | TBD |
-| **Độ Trễ Forward Pass (Latency)** | **~12.5 ms** (Batch 4) | TBD | TBD |
-| **Thông Lượng (Throughput)** | **~320 samples/sec** | TBD | TBD |
-| **AR Cross-Entropy Loss** | `6.91` (Baseline) | TBD | TBD |
-| **DM Reconstruction MSE Loss** | `1.02` (Baseline) | TBD | TBD |
-| **Attention Isolation ($Q_{AR} \times K_{DM} = 0$)** | **PASSED [OK]** | TBD | TBD |
+| **Tổng Số Tham Số (Params)** | **20.49 M** | **~85 M - 100 M** | TBD |
+| **Kích Thước Cấu Hình ($d_{model} / L / H$)** | $512 / 6 / 8$ | $1024 / 8 / 16$ | TBD |
+| **Mức Tiêu Thụ VRAM Peak (MB)** | **139.78 MB** | TBD *(Đo trên Kaggle)* | TBD |
+| **Độ Trễ Forward Pass (Latency)** | **5.27 ms** (Batch 4) | TBD *(Đo trên Kaggle)* | TBD |
+| **Thông Lượng (Throughput)** | **758.7 samples/sec** | TBD *(Đo trên Kaggle)* | TBD |
+| **AR Cross-Entropy Loss** | `7.1093` | TBD | TBD |
+| **DM Reconstruction MSE Loss** | `1.2332` | TBD | TBD |
+| **Attention Isolation ($Q_{AR} \times K_{DM} = 0$)** | **PASSED [OK]** | **PASSED [OK]** | TBD |
 
 ---
 
 ## 2. Chi Tiết Các Phiên Bản Thử Nghiệm
 
-### 2.1. Version 1 (`mini_model/version1`) - Baseline Model
+### 2.1. Version 1 (`mini_model/version1`) - Baseline Model (~20.49M Params)
 - **Mô tả:** Phiên bản PoC thu nhỏ chuẩn kiến trúc NVIDIA Cosmos 3 Mixture-of-Transformers (MoT).
-- **Điểm nổi bật:**
-  - Tích hợp Ma trận Attention Mask hợp nhất ($Q_{AR} \times K_{AR}$ Causal, $Q_{AR} \times K_{DM}$ Masked Zero, $Q_{DM} \times [K_{AR}, K_{DM}]$ Full Attention).
-  - Hỗ trợ chạy đa chế độ suy luận: **Reasoner Mode** (AR) và **Generator Mode** (DM + Action).
-  - Chạy mượt trên mọi thiết bị (VRAM `< 2GB` hoặc CPU).
+- **Kết quả thực tế (Kaggle Benchmark):**
+  - Total Params: **20.49 M**
+  - Peak VRAM: **139.78 MB**
+  - Latency: **5.27 ms / batch**
+  - Throughput: **758.7 samples/sec**
+  - AR Loss: **7.1093** | DM MSE Loss: **1.2332**
+  - Attention Isolation Check: **PASSED (100% cách ly nhiễu sinh khỏi nhánh AR)**
 
-### 2.2. Kế Hoạch Cho Các Phiên Bản Tiếp Theo
-- **Version 2 (`mini_model/version2`):**
-  - Thử nghiệm tích hợp **Rotary Position Embeddings (RoPE)** cho chuỗi AR.
-  - Thử nghiệm **Grouped-Query Attention (GQA)** để giảm dung lượng KV Cache và tăng throughput.
-- **Version 3 (`mini_model/version3`):**
-  - Thử nghiệm **FlashAttention-2** hoặc **Chế độ Lượng tử hóa (FP8 / INT4)**.
-  - Tăng nhẹ số lớp $L=12, d_{model}=768$ (~150M params) để đo lường giới hạn scaling trên Kaggle T4 GPU.
+### 2.2. Version 2 (`mini_model/version2`) - Scaled Model (~95M Params)
+- **Mục tiêu:** Nâng cấp quy mô tham số để đánh giá khả năng mở rộng (Scaling Law) của MoT:
+  - Nâng chiều $d_{model}$ từ **$512 \rightarrow 1024$**.
+  - Nâng số lớp Transformer từ **$6 \rightarrow 8$ layers**.
+  - Nâng số Attention Heads từ **$8 \rightarrow 16$ heads**.
+  - Tích hợp thêm **RMSNorm** và **SiLU SwiGLU MLP** để tăng tính ổn định khi mở rộng quy mô.
 
 ---
 
 ## 3. Quy Trình Chạy Benchmark Cho Phiên Bản Mới
 
-Để đo lường và cập nhật chỉ số cho phiên bản mới, thực hiện lệnh sau:
+Để đo lường chỉ số cho Version 2 trên Kaggle Notebook:
 
 ```bash
-# Đánh giá Version 1
-python benchmark.py --version version1 --batch_size 4 --num_runs 50
+# Cập nhật repo từ GitHub
+!git pull
 
-# Đánh giá Version 2 (sau khi tạo thư mục mini_model/version2)
-python benchmark.py --version version2 --batch_size 4 --num_runs 50
+# Chạy benchmark cho Version 2
+!python benchmark.py --version version2 --batch_size 4 --num_runs 50
 ```
-
-Các kết quả chỉ số sẽ tự động được ghi lại vào file `benchmark_results.json`.

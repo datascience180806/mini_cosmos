@@ -3,7 +3,7 @@ Benchmark suite for mini_cosmos model versions.
 Measures parameters, peak VRAM, forward pass latency, loss metrics, and attention mask isolation.
 
 Usage:
-    python benchmark.py --version version5 --fp16
+    python benchmark.py --version version7 --fp16 --multi_gpu
 """
 
 import argparse
@@ -25,6 +25,7 @@ def parse_args():
     parser.add_argument("--seq_len_dm", type=int, default=16, help="Sequence length for DM tokens")
     parser.add_argument("--num_runs", type=int, default=50, help="Number of benchmark iterations")
     parser.add_argument("--fp16", action="store_true", help="Run benchmark in FP16 half-precision mode")
+    parser.add_argument("--multi_gpu", action="store_true", help="Enable Multi-GPU DataParallel scaling across GPUs")
     parser.add_argument("--output_file", type=str, default="benchmark_results.json", help="Path to save metrics")
     return parser.parse_args()
 
@@ -46,9 +47,10 @@ def measure_attention_mask_isolation(model: nn.Module, config: Any, device: torc
     Sanity check to verify that Q_AR x K_DM is strictly masked (-inf / zero attention weights)
     to prevent diffusion noise from interfering with autoregressive reasoning.
     """
-    model.eval()
+    raw_model = model.module if isinstance(model, nn.DataParallel) else model
+    raw_model.eval()
     with torch.no_grad():
-        mask_gen = getattr(model, "mask_generator", None)
+        mask_gen = getattr(raw_model, "mask_generator", None)
         if mask_gen is None:
             return False
         
@@ -63,17 +65,17 @@ def measure_attention_mask_isolation(model: nn.Module, config: Any, device: torc
 
 def run_benchmark(args) -> Dict[str, Any]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
     use_fp16 = args.fp16
 
     print("=" * 70)
     print(f"BENCHMARKING MINI_COSMOS VERSION: {args.version}")
-    print(f"Device: {device} | Batch Size: {args.batch_size} | Iterations: {args.num_runs}")
+    print(f"Device: {device} ({num_gpus} GPUs available) | Batch Size: {args.batch_size} | Iterations: {args.num_runs}")
     print("=" * 70)
 
     Cosmos3ToyModel, Cosmos3Config = load_model_version(args.version)
     config = Cosmos3Config()
 
-    # Create model and handle potential CUDA OutOfMemory via FP16 fallback
     model = Cosmos3ToyModel(config)
     
     if device.type == "cuda":
@@ -88,17 +90,21 @@ def run_benchmark(args) -> Dict[str, Any]:
             torch.cuda.empty_cache()
             use_fp16 = True
             model = model.half().to(device)
+
+        if (args.multi_gpu or num_gpus > 1) and num_gpus > 1:
+            print(f"[INFO] Dual/Multi-GPU Parallelism (DataParallel) duoc kich hoat tren {num_gpus} GPUs!")
+            model = nn.DataParallel(model)
     else:
         model = model.to(device)
 
     # 1. Parameter Count
-    total_params = sum(p.numel() for p in model.parameters())
-    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    raw_model = model.module if isinstance(model, nn.DataParallel) else model
+    total_params = sum(p.numel() for p in raw_model.parameters())
+    trainable_params = sum(p.numel() for p in raw_model.parameters() if p.requires_grad)
 
     # 2. Attention Isolation Sanity Check
     isolation_passed = measure_attention_mask_isolation(model, config, device)
 
-    # Prepare dummy synthetic test data with matching dtype
     dtype = torch.float16 if use_fp16 and device.type == "cuda" else torch.float32
 
     ar_input = torch.randint(0, config.vocab_size, (args.batch_size, args.seq_len_ar), device=device)
@@ -151,6 +157,7 @@ def run_benchmark(args) -> Dict[str, Any]:
     metrics = {
         "version": args.version,
         "precision": "FP16" if use_fp16 else "FP32",
+        "num_gpus": num_gpus if device.type == "cuda" else 0,
         "total_parameters_M": round(total_params / 1e6, 2),
         "trainable_parameters_M": round(trainable_params / 1e6, 2),
         "peak_vram_mb": round(peak_vram_mb, 2),
@@ -167,7 +174,7 @@ def run_benchmark(args) -> Dict[str, Any]:
     print("\n" + "=" * 50)
     print("BENCHMARK METRICS SUMMARY")
     print("=" * 50)
-    print(f"  • Model Version           : {metrics['version']} ({metrics['precision']})")
+    print(f"  • Model Version           : {metrics['version']} ({metrics['precision']} | {metrics['num_gpus']} GPUs)")
     print(f"  • Total Parameters        : {metrics['total_parameters_M']} M")
     print(f"  • Peak VRAM Usage         : {metrics['peak_vram_mb']} MB")
     print(f"  • Avg Latency (Batch {args.batch_size}) : {metrics['avg_latency_ms']} ms")

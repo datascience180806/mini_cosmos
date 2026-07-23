@@ -10,18 +10,18 @@ import torch.nn.functional as F
 @dataclass
 class Cosmos3Config:
     """
-    Cấu hình thông số kỹ thuật cho Version 7 (Đột phá Dual GPU T4 ~14.2 Billion Parameters)
-    - hidden_dim: 5120
-    - num_layers: 40 layers
-    - num_heads: 40 (num_kv_heads=10, GQA 4:1)
+    Cấu hình thông số kỹ thuật cho Version 7 (Đột phá Dual GPU T4 ~10.08 Billion Parameters)
+    - hidden_dim: 4608
+    - num_layers: 36 layers
+    - num_heads: 36 (num_kv_heads=9, GQA 4:1)
     - vocab_size: 32000
     - latent_dim: 256
     """
-    hidden_dim: int = 5120           # Dim không gian nhúng siêu lớn
-    num_heads: int = 40              # 40 Query Attention Heads
-    num_kv_heads: int = 10           # 10 Key/Value Attention Heads (GQA 4:1)
-    num_layers: int = 40             # 40 Transformer Blocks (Quy mô 14.2B)
-    mlp_ratio: float = 3.5           # SwiGLU intermediate dim = 17920
+    hidden_dim: int = 4608           # Dim không gian nhúng
+    num_heads: int = 36              # 36 Query Attention Heads
+    num_kv_heads: int = 9            # 9 Key/Value Attention Heads (GQA 4:1)
+    num_layers: int = 36             # 36 Transformer Blocks (Quy mô 10.08B)
+    mlp_ratio: float = 3.5           # SwiGLU intermediate dim = 16128
     dropout: float = 0.1
     
     # Kích thước từ vựng & Latent các modality mở rộng
@@ -93,7 +93,7 @@ class Cosmos3AttentionMask(nn.Module):
 
 class GroupedQueryMultimodalAttention(nn.Module):
     """
-    Shared Multimodal Attention với GQA & RoPE cho quy mô 14.2B.
+    Shared Multimodal Attention với GQA & RoPE cho quy mô 10.08B.
     """
     def __init__(self, config: Cosmos3Config):
         super().__init__()
@@ -153,7 +153,7 @@ class SwiGLUMLP(nn.Module):
 
 
 class Cosmos3Block(nn.Module):
-    """Khối Transformer Version 7 quy mô 14.2B Params."""
+    """Khối Transformer Version 7 quy mô 10.08B Params."""
     def __init__(self, config: Cosmos3Config):
         super().__init__()
         self.norm1 = RMSNorm(config.hidden_dim)
@@ -169,8 +169,8 @@ class Cosmos3Block(nn.Module):
 
 class Cosmos3ToyModel(nn.Module):
     """
-    Mô hình Cosmos 3 Version 7 (Dual GPU MoT Model ~14.2 Billion parameters):
-    - Tương đương quy mô 14.2B: hidden_dim=5120, num_layers=40.
+    Mô hình Cosmos 3 Version 7 (Dual GPU MoT Model ~10.08 Billion parameters):
+    - Tương đương quy mô 10.08B: hidden_dim=4608, num_layers=36.
     - Chạy song song trên Dual T4 GPUs (32GB VRAM total).
     - Grouped-Query Attention (GQA 4:1) & Rotary Position Embedding (RoPE).
     - RMSNorm + SwiGLU MLP.
@@ -257,5 +257,5 @@ if __name__ == "__main__":
     config = Cosmos3Config()
     model = Cosmos3ToyModel(config)
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"[SUCCESS] Khoi tao Cosmos 3 Version 7 Dual GPU Model (~14.2B Params) thanh cong!")
+    print(f"[SUCCESS] Khoi tao Cosmos 3 Version 7 Dual GPU Model (~10.08B Params) thanh cong!")
     print(f"-> Tong so luong tham so (Total Parameters): {total_params / 1e6:.2f}M ({total_params / 1e9:.2f}B)")

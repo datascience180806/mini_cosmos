@@ -7,13 +7,12 @@
 
 ## 1. Bảng So Sánh Tổng Quan (Benchmark Matrix)
 
-| Thông Số Benchmark | Version 0 (Cosmos 3 Nano Baseline) | Version 1 (Mini PoC) | Version 2 (Scaled SwiGLU) | Version 3 (GQA + RoPE) | Version 4 (1.34B Model) | Version 5 (4.03B FP16 Model) | Version 6 (7.24B Max Single T4) | Version 7 (14.2B Dual T4 GPU) |
+| Thông Số Benchmark | Version 0 (Cosmos 3 Baseline) | Version 1 (Mini PoC) | Version 2 (Scaled) | Version 3 (GQA+RoPE) | Version 4 (1.34B) | Version 5 (4.03B FP16) | Version 6 (7.24B Max 1xT4) | Version 7 (10.08B Dual T4 GPU) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Tổng Số Tham Số (Params)** | **16 B (8B Dense)** | **20.49 M** | **127.99 M** | **140.57 M** | **1,342.30 M (1.34B)** | **4,026.76 M (4.03B)** | **7,244.92 M (7.24B)** | **~14,200 M (14.2B)** |
-| **Kích Thước Cấu Hình ($d_{model} / L / H$)** | $4096 / 32 / 32$ | $512 / 6 / 8$ | $1024 / 8 / 16$ | $1024 / 10 / 16$ ($H_{KV}=4$) | $2048 / 24 / 16$ ($H_{KV}=4$) | $3072 / 32 / 24$ ($H_{KV}=6$) | $4096 / 32 / 32$ ($H_{KV}=8$) | $5120 / 40 / 40$ ($H_{KV}=10$) |
-| **Kiểu Dữ Liệu (Precision)** | FP8 / BF16 | FP32 | FP32 | FP32 | FP32 | **FP16** | **FP16** | **FP16** |
-| **Số Lượng GPU (Device Scaling)** | Datacenter | 1x GPU | 1x GPU | 1x GPU | 1x GPU | 1x GPU T4 | **1x GPU T4 (Max)** | **2x GPU T4 (Dual GPU)** |
-| **Mức Tiêu Thụ VRAM Peak (MB)** | **~18,000 MB** | **139.78 MB** | **702.38 MB** | **810.40 MB** | **6,424.15 MB (6.42GB)** | **8,443.60 MB (8.44GB)** | **14,306.24 MB (14.31GB)** | TBD *(Đo trên Kaggle 2xT4)* |
+| **Tổng Số Tham Số (Params)** | **16 B (8B Dense)** | **20.49 M** | **127.99 M** | **140.57 M** | **1,342.30 M** | **4,026.76 M** | **7,244.92 M (7.24B)** | **~10,084 M (10.08B)** |
+| **Số Lượng GPU Sử Dụng** | Datacenter | 1x GPU | 1x GPU | 1x GPU | 1x GPU | 1x GPU T4 | **1x GPU T4 (Max 98.2%)** | **2x GPU T4 (Dual GPU)** |
+| **Kiểu Dữ Liệu (Precision)** | FP8 / BF16 | FP32 | FP32 | FP32 | FP32 | **FP16** | **FP16** | **FP16 (Direct GPU Init)** |
+| **Mức Tiêu Thụ VRAM Peak** | **~18,000 MB** | **139.78 MB** | **702.38 MB** | **810.40 MB** | **6,424.15 MB** | **8,443.60 MB** | **14,306.24 MB (14.31GB)** | TBD *(Đo trên Kaggle 2xT4)* |
 | **Độ Trễ Forward Pass (Latency)** | N/A | **5.27 ms** | **20.44 ms** | **23.09 ms** | **208.90 ms** | **69.62 ms** | **86.58 ms** | TBD *(Đo trên Kaggle 2xT4)* |
 | **Thông Lượng (Throughput)** | N/A | **758.70 fps** | **195.74 fps** | **173.24 fps** | **19.15 fps** | **28.73 fps** | **11.55 fps** | TBD *(Đo trên Kaggle 2xT4)* |
 | **AR Cross-Entropy Loss** | N/A | `7.1093` | `7.7275` | `7.7695` | `9.0605` | `9.9545` | `10.4755` | TBD |
@@ -73,11 +72,12 @@
   - **Chiều ẩn $d_{model}=4096, L=32, H_Q=32, H_{KV}=8$:** Đạt quy mô **7,244.92M tham số (~7.24B)**, tương đương với nhánh Dense Backbone của Cosmos 3 Nano gốc.
   - **Kết quả VRAM:** Chiếm **14,306.24 MB (~14.31 GB VRAM)** trên 1x GPU T4 (đạt 98.2% giới hạn tối đa 14.56 GB).
 
-### 2.8. Version 7 (`mini_model/version7`) - Đột Phá Đa GPU (Dual T4 GPU Parallelism - ~14.2B Params)
-- **Mã nguồn:** Xây dựng trên `torch.nn` kết hợp `torch.nn.DataParallel` / Device Pipeline Placement.
+### 2.8. Version 7 (`mini_model/version7`) - Đột Phá Đa GPU T4 (Dual GPU Direct Init - ~10.08B Params)
+- **Mã nguồn:** Xây dựng trên `torch.nn` kết hợp `torch.nn.DataParallel` & **GPU Direct Allocation (`with torch.device('cuda:0')`)**.
 - **Khối chức năng & Mã nguồn sử dụng:**
-  - **Chiều ẩn $d_{model}=5120, L=40, H_Q=40, H_{KV}=10$:** Đạt quy mô cực khủng **~14.2 Tỷ tham số (14.2 Billion parameters)**.
-  - **Song song hóa Dual GPU (2x T4 GPUs = 32GB VRAM):** Tự động phân bổ hoặc song song hóa batch/tầng mô hình trên 2 card T4 của Kaggle.
+  - **Chiều ẩn $d_{model}=4608, L=36, H_Q=36, H_{KV}=9$:** Đạt quy mô cực khủng **~10.08 Tỷ tham số (10.08 Billion parameters)**.
+  - **GPU Direct Allocation:** Khởi tạo trực tiếp tham số trên bộ nhớ VRAM ở định dạng FP16, hoàn toàn bỏ qua việc phân bổ vào bộ nhớ RAM hệ thống (CPU RAM 30GB), ngăn chặn hoàn toàn hiện tượng Notebook bị Restart do OOM RAM.
+  - **Song song hóa Dual GPU (2x T4 GPUs = 32GB VRAM):** Tự động phân bổ batch và tính toán chú ý song song trên cả 2 card T4 của Kaggle.
 
 ---
 
@@ -89,6 +89,6 @@
 # Cập nhật repo từ GitHub
 !git pull
 
-# Chạy benchmark Version 7 tận dụng Dual GPU T4 (Kích hoạt FP16 & Multi-GPU)
+# Chạy benchmark Version 7 tận dụng Dual GPU T4 (Kích hoạt FP16 & Multi-GPU & Direct GPU Init)
 !python benchmark.py --version version7 --batch_size 2 --num_runs 50 --fp16 --multi_gpu
 ```

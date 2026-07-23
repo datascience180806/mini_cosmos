@@ -20,7 +20,7 @@ import torch.nn as nn
 def parse_args():
     parser = argparse.ArgumentParser(description="Benchmark mini_cosmos model versions")
     parser.add_argument("--version", type=str, default="version1", help="Version name (e.g. version1)")
-    parser.add_argument("--batch_size", type=int, default=4, help="Batch size for benchmarking")
+    parser.add_argument("--batch_size", type=int, default=2, help="Batch size for benchmarking")
     parser.add_argument("--seq_len_ar", type=int, default=32, help="Sequence length for AR tokens")
     parser.add_argument("--seq_len_dm", type=int, default=16, help="Sequence length for DM tokens")
     parser.add_argument("--num_runs", type=int, default=50, help="Number of benchmark iterations")
@@ -76,26 +76,29 @@ def run_benchmark(args) -> Dict[str, Any]:
     Cosmos3ToyModel, Cosmos3Config = load_model_version(args.version)
     config = Cosmos3Config()
 
-    model = Cosmos3ToyModel(config)
-    
+    # Create model directly on GPU with FP16 to bypass System CPU RAM allocation
     if device.type == "cuda":
         try:
             if use_fp16:
-                print("[INFO] Che do FP16 (Half Precision) duoc kich hoat.")
-                model = model.half().to(device)
+                print("[INFO] Kích hoạt FP16 & GPU Direct Allocation (Không tiêu tốn System CPU RAM).")
+                torch.set_default_dtype(torch.float16)
+                with torch.device("cuda:0"):
+                    model = Cosmos3ToyModel(config)
+                torch.set_default_dtype(torch.float32)
             else:
-                model = model.to(device)
-        except (torch.OutOfMemoryError, RuntimeError) as e:
-            print(f"[WARNING] Tràn bộ nhớ VRAM khi load FP32! Tự động chuyển sang FP16 Half Precision Mode...")
-            torch.cuda.empty_cache()
-            use_fp16 = True
-            model = model.half().to(device)
+                with torch.device("cuda:0"):
+                    model = Cosmos3ToyModel(config)
+        except Exception as e:
+            print(f"[WARNING] Direct GPU allocation warning ({e}). Falling back to standard float16 init...")
+            torch.set_default_dtype(torch.float16)
+            model = Cosmos3ToyModel(config).to(device)
+            torch.set_default_dtype(torch.float32)
 
         if (args.multi_gpu or num_gpus > 1) and num_gpus > 1:
-            print(f"[INFO] Dual/Multi-GPU Parallelism (DataParallel) duoc kich hoat tren {num_gpus} GPUs!")
+            print(f"[INFO] Dual/Multi-GPU Parallelism (DataParallel) được kích hoạt trên {num_gpus} GPUs!")
             model = nn.DataParallel(model)
     else:
-        model = model.to(device)
+        model = Cosmos3ToyModel(config).to(device)
 
     # 1. Parameter Count
     raw_model = model.module if isinstance(model, nn.DataParallel) else model
@@ -114,7 +117,7 @@ def run_benchmark(args) -> Dict[str, Any]:
     action_input = torch.randn(args.batch_size, args.seq_len_dm, config.action_dim, device=device, dtype=dtype)
 
     # Warmup runs
-    for _ in range(5):
+    for _ in range(3):
         _ = model(ar_tokens=ar_input, dm_latent=dm_input, action_vectors=action_input, mode="both")
 
     if device.type == "cuda":

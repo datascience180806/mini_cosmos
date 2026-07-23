@@ -12,6 +12,9 @@ Mục đích chính của dự án là **tìm hiểu, kiểm thử luồng chạ
 cosmos/
 ├── .gitignore                      # Cấu hình bỏ qua các file tạm / checkpoints
 ├── README.md                       # Hướng dẫn chạy trên Kaggle / Local
+├── VERSION_COMPARISON.md           # Báo cáo so sánh hiệu năng các phiên bản mini_model
+├── benchmark.py                    # Script tự động đo Latency, VRAM, Loss, và Attention Mask Isolation
+├── benchmark_results.json          # File lưu trữ chỉ số benchmark của các phiên bản
 ├── requirements.txt                # Thư viện phụ thuộc cơ bản (torch, numpy, tqdm)
 ├── report.md                       # Báo cáo lý thuyết chi tiết về kiến trúc Cosmos 3
 ├── sample_architecture.md          # Sơ đồ thư mục kho mã nguồn NVIDIA Cosmos
@@ -26,7 +29,24 @@ cosmos/
 
 ---
 
-## 2. Hướng Dẫn Chạy Trên Kaggle Notebook
+## 2. Hướng Dẫn Chạy Benchmark & So Sánh Phiên Bản
+
+Để chạy bộ công cụ đánh giá hiệu năng (Benchmark Suite) cho phiên bản hiện tại hoặc các phiên bản mới:
+
+```bash
+# Benchmark Version 1
+python benchmark.py --version version1 --batch_size 4 --num_runs 50
+```
+
+Các chỉ số đo lường bao gồm:
+- **Parameters & Peak VRAM:** Đo tổng tham số và bộ nhớ GPU chiếm dụng.
+- **Latency & Throughput:** Đo thời gian suy luận (ms/batch) và số lượng mẫu xử lý/giây.
+- **Attention Isolation:** Tự động kiểm tra tính đúng đắn của ma trận Attention Mask ($Q_{AR} \times K_{DM} = 0$).
+- Xem chi tiết bảng so sánh các phiên bản tại [VERSION_COMPARISON.md](file:///c:/Users/Admin/Documents/reasearch/cosmos/VERSION_COMPARISON.md).
+
+---
+
+## 3. Hướng Dẫn Chạy Trên Kaggle Notebook
 
 ### Bước 1: Cài Đặt Thư Viện
 Trên notebook Kaggle (bật GPU T4 hoặc P100 / CPU):
@@ -51,7 +71,7 @@ Thử nghiệm 2 chế độ vận hành **Reasoner Mode** (dự đoán token v�
 
 ---
 
-## 3. Đặc Điểm Kiến Trúc Toy Model (`mini_model/version1/model.py`)
+## 4. Đặc Điểm Kiến Trúc Toy Model (`mini_model/version1/model.py`)
 
 - **$d_{model}$:** $512$
 - **Số lớp ($L$):** $6$ layers

@@ -3,7 +3,7 @@ Benchmark suite for mini_cosmos model versions.
 Measures parameters, peak VRAM, forward pass latency, loss metrics, and attention mask isolation.
 
 Usage:
-    python benchmark.py --version version1
+    python benchmark.py --version version5 --fp16
 """
 
 import argparse
@@ -24,6 +24,7 @@ def parse_args():
     parser.add_argument("--seq_len_ar", type=int, default=32, help="Sequence length for AR tokens")
     parser.add_argument("--seq_len_dm", type=int, default=16, help="Sequence length for DM tokens")
     parser.add_argument("--num_runs", type=int, default=50, help="Number of benchmark iterations")
+    parser.add_argument("--fp16", action="store_true", help="Run benchmark in FP16 half-precision mode")
     parser.add_argument("--output_file", type=str, default="benchmark_results.json", help="Path to save metrics")
     return parser.parse_args()
 
@@ -55,15 +56,15 @@ def measure_attention_mask_isolation(model: nn.Module, config: Any, device: torc
         seq_len_dm = 8
         attn_mask = mask_gen(seq_len_ar, seq_len_dm, device=device)
         
-        # Check Top-Right block Q_AR x K_DM
         top_right_block = attn_mask[:seq_len_ar, seq_len_ar:]
-        # All values in top_right_block must be -inf
         is_isolated = torch.all(torch.isinf(top_right_block) & (top_right_block < 0)).item()
         return is_isolated
 
 
 def run_benchmark(args) -> Dict[str, Any]:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    use_fp16 = args.fp16
+
     print("=" * 70)
     print(f"BENCHMARKING MINI_COSMOS VERSION: {args.version}")
     print(f"Device: {device} | Batch Size: {args.batch_size} | Iterations: {args.num_runs}")
@@ -71,7 +72,24 @@ def run_benchmark(args) -> Dict[str, Any]:
 
     Cosmos3ToyModel, Cosmos3Config = load_model_version(args.version)
     config = Cosmos3Config()
-    model = Cosmos3ToyModel(config).to(device)
+
+    # Create model and handle potential CUDA OutOfMemory via FP16 fallback
+    model = Cosmos3ToyModel(config)
+    
+    if device.type == "cuda":
+        try:
+            if use_fp16:
+                print("[INFO] Che do FP16 (Half Precision) duoc kich hoat.")
+                model = model.half().to(device)
+            else:
+                model = model.to(device)
+        except (torch.OutOfMemoryError, RuntimeError) as e:
+            print(f"[WARNING] Tràn bộ nhớ VRAM khi load FP32! Tự động chuyển sang FP16 Half Precision Mode...")
+            torch.cuda.empty_cache()
+            use_fp16 = True
+            model = model.half().to(device)
+    else:
+        model = model.to(device)
 
     # 1. Parameter Count
     total_params = sum(p.numel() for p in model.parameters())
@@ -80,12 +98,14 @@ def run_benchmark(args) -> Dict[str, Any]:
     # 2. Attention Isolation Sanity Check
     isolation_passed = measure_attention_mask_isolation(model, config, device)
 
-    # Prepare dummy synthetic test data
+    # Prepare dummy synthetic test data with matching dtype
+    dtype = torch.float16 if use_fp16 and device.type == "cuda" else torch.float32
+
     ar_input = torch.randint(0, config.vocab_size, (args.batch_size, args.seq_len_ar), device=device)
     ar_target = torch.randint(0, config.vocab_size, (args.batch_size, args.seq_len_ar), device=device)
-    dm_input = torch.randn(args.batch_size, args.seq_len_dm, config.latent_dim, device=device)
-    dm_target = torch.randn(args.batch_size, args.seq_len_dm, config.latent_dim, device=device)
-    action_input = torch.randn(args.batch_size, args.seq_len_dm, config.action_dim, device=device)
+    dm_input = torch.randn(args.batch_size, args.seq_len_dm, config.latent_dim, device=device, dtype=dtype)
+    dm_target = torch.randn(args.batch_size, args.seq_len_dm, config.latent_dim, device=device, dtype=dtype)
+    action_input = torch.randn(args.batch_size, args.seq_len_dm, config.action_dim, device=device, dtype=dtype)
 
     # Warmup runs
     for _ in range(5):
@@ -111,27 +131,26 @@ def run_benchmark(args) -> Dict[str, Any]:
     if device.type == "cuda":
         peak_vram_mb = torch.cuda.max_memory_allocated() / (1024 * 1024)
     else:
-        # Theoretical estimate in FP32
-        peak_vram_mb = (total_params * 4) / (1024 * 1024)
+        bytes_per_param = 2 if use_fp16 else 4
+        peak_vram_mb = (total_params * bytes_per_param) / (1024 * 1024)
 
     # 5. Quality & Loss Evaluation on Synthetic Test Batch
     model.eval()
     with torch.no_grad():
         out = model(ar_tokens=ar_input, dm_latent=dm_input, action_vectors=action_input, mode="both")
         
-        # AR Accuracy & CrossEntropy Loss
         ar_logits = out["ar_logits"]
-        ar_loss = nn.CrossEntropyLoss()(ar_logits.view(-1, config.vocab_size), ar_target.view(-1)).item()
+        ar_loss = nn.CrossEntropyLoss()(ar_logits.view(-1, config.vocab_size).float(), ar_target.view(-1)).item()
         preds = torch.argmax(ar_logits, dim=-1)
         ar_acc = (preds == ar_target).float().mean().item() * 100
 
-        # DM Reconstruction MSE Loss & Cosine Similarity
         dm_pred = out["dm_predicted_latent"]
-        dm_mse = nn.MSELoss()(dm_pred, dm_target).item()
-        dm_cos_sim = nn.CosineSimilarity(dim=-1)(dm_pred, dm_target).mean().item()
+        dm_mse = nn.MSELoss()(dm_pred.float(), dm_target.float()).item()
+        dm_cos_sim = nn.CosineSimilarity(dim=-1)(dm_pred.float(), dm_target.float()).mean().item()
 
     metrics = {
         "version": args.version,
+        "precision": "FP16" if use_fp16 else "FP32",
         "total_parameters_M": round(total_params / 1e6, 2),
         "trainable_parameters_M": round(trainable_params / 1e6, 2),
         "peak_vram_mb": round(peak_vram_mb, 2),
@@ -145,11 +164,10 @@ def run_benchmark(args) -> Dict[str, Any]:
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
     }
 
-    # Print Summary Table
     print("\n" + "=" * 50)
     print("BENCHMARK METRICS SUMMARY")
     print("=" * 50)
-    print(f"  • Model Version           : {metrics['version']}")
+    print(f"  • Model Version           : {metrics['version']} ({metrics['precision']})")
     print(f"  • Total Parameters        : {metrics['total_parameters_M']} M")
     print(f"  • Peak VRAM Usage         : {metrics['peak_vram_mb']} MB")
     print(f"  • Avg Latency (Batch {args.batch_size}) : {metrics['avg_latency_ms']} ms")
@@ -159,7 +177,6 @@ def run_benchmark(args) -> Dict[str, Any]:
     print(f"  • Attention Mask Isolation: {'PASSED [OK]' if isolation_passed else 'FAILED [X]'}")
     print("=" * 50)
 
-    # Load existing benchmark results if present and update
     results_all = {}
     if os.path.exists(args.output_file):
         try:

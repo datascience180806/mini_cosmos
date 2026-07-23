@@ -60,8 +60,8 @@ class RotaryPositionEmbedding(nn.Module):
 
     def forward(self, q: torch.Tensor, k: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         seq_len = q.shape[2]
-        cos = self.cos_cached[:seq_len, :].unsqueeze(0).unsqueeze(0)  # [1, 1, seq_len, head_dim]
-        sin = self.sin_cached[:seq_len, :].unsqueeze(0).unsqueeze(0)
+        cos = self.cos_cached[:seq_len, :].to(q.dtype).unsqueeze(0).unsqueeze(0)
+        sin = self.sin_cached[:seq_len, :].to(q.dtype).unsqueeze(0).unsqueeze(0)
         
         q_embed = (q * cos) + (self._rotate_half(q) * sin)
         k_embed = (k * cos) + (self._rotate_half(k) * sin)

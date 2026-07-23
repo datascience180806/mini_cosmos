@@ -7,10 +7,10 @@
 
 ## 1. Bảng So Sánh Tổng Quan (Benchmark Matrix)
 
-| Thông Số Benchmark | Version 0 (Cosmos 3 Nano Baseline) | Version 1 (Mini PoC) | Version 2 (Scaled SwiGLU) | Version 3 (GQA + RoPE) | Version 4 (Large Scale MoT) |
+| Thông Số Benchmark | Version 0 (Cosmos 3 Nano Baseline) | Version 1 (Mini PoC) | Version 2 (Scaled SwiGLU) | Version 3 (GQA + RoPE) | Version 4 (1.31B Large Model) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **Tổng Số Tham Số (Params)** | **16 B (8B Dense)** | **20.49 M** | **127.99 M** | **140.57 M** | **~350 M - 450 M** |
-| **Kích Thước Cấu Hình ($d_{model} / L / H$)** | $4096 / 32 / 32$ | $512 / 6 / 8$ | $1024 / 8 / 16$ | $1024 / 10 / 16$ ($H_{KV}=4$) | $2048 / 16 / 16$ ($H_{KV}=4$) |
+| **Tổng Số Tham Số (Params)** | **16 B (8B Dense)** | **20.49 M** | **127.99 M** | **140.57 M** | **~1.31 B (1,308 M)** |
+| **Kích Thước Cấu Hình ($d_{model} / L / H$)** | $4096 / 32 / 32$ | $512 / 6 / 8$ | $1024 / 8 / 16$ | $1024 / 10 / 16$ ($H_{KV}=4$) | $2048 / 24 / 16$ ($H_{KV}=4$) |
 | **Mức Tiêu Thụ VRAM Peak (MB)** | **~18,000 MB** (FP8) | **139.78 MB** | **702.38 MB** | **810.40 MB** | TBD *(Đo trên Kaggle)* |
 | **Độ Trễ Forward Pass (Latency)** | N/A | **5.27 ms** | **20.44 ms** | **23.09 ms** | TBD *(Đo trên Kaggle)* |
 | **Thông Lượng (Throughput)** | N/A | **758.70 samples/sec** | **195.74 samples/sec** | **173.24 samples/sec** | TBD *(Đo trên Kaggle)* |
@@ -53,13 +53,13 @@
   - **Rotary Position Embedding (RoPE):** Ánh xạ tọa độ vị trí tương quan trực tiếp vào không gian xoay Query và Key.
   - **Normalization & MLP:** RMSNorm + SwiGLU MLP kết hợp ma trận Attention Mask hợp nhất.
 
-### 2.5. Version 4 (`mini_model/version4`) - Tăng Quy Mô Tham Số Đáng Kể (~400M Params)
+### 2.5. Version 4 (`mini_model/version4`) - Đột Phá Quy Mô 1.31 Billion Parameters (~1.31B Params)
 - **Mã nguồn:** Xây dựng trên `torch.nn`.
 - **Khối chức năng & Mã nguồn sử dụng:**
-  - **Mở rộng chiều ẩn $d_{model}$ lên 2048 và số lớp lên 16:** Đưa tổng số tham số tiệm cận quy mô Small LLM (~400M parameters).
-  - **Grouped-Query Attention (GQA):** Tiếp tục duy trì tỉ lệ 4:1 ($H_Q=16, H_{KV}=4$) để nén bộ nhớ KV Cache.
-  - **Mở rộng Vocabulary & Latent:** Nâng `vocab_size` lên 4000 và `latent_dim` lên 64 để hỗ trợ biểu diễn đặc trưng thị giác độ phân giải cao hơn.
-  - **RoPE + SwiGLU + RMSNorm:** Cấu trúc tầng đồng dạng tối ưu hóa khả năng huấn luyện song song.
+  - **Mở rộng chiều ẩn $d_{model}$ lên 2048 và số lớp lên 24:** Đưa tổng số tham số vượt mốc **1.31 Tỷ tham số (1.31B parameters)**.
+  - **Grouped-Query Attention (GQA):** Tỉ lệ 4:1 ($H_Q=16, H_{KV}=4$) đảm bảo tiết kiệm bộ nhớ KV Cache khi chạy trên GPU T4 (16GB VRAM).
+  - **Từ vựng & Latent độ phân giải cao:** Nâng `vocab_size` lên 8000 và `latent_dim` lên 128.
+  - **RoPE + SwiGLU + RMSNorm:** Cấu trúc tầng đồng dạng tối ưu khả năng huấn luyện và suy luận độ chính xác cao.
 
 ---
 

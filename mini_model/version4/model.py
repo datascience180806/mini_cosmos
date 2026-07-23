@@ -10,21 +10,25 @@ import torch.nn.functional as F
 @dataclass
 class Cosmos3Config:
     """
-    Cấu hình thông số kỹ thuật cho Version 4 (Large Scale MoT Model ~380M parameters)
-    Tăng chiều ẩn hidden_dim lên 1536, num_layers=12, vocab_size=4000, latent_dim=64.
+    Cấu hình thông số kỹ thuật cho Version 4 (Scale mạnh lên ~1.31 Billion Parameters)
+    - hidden_dim: 2048
+    - num_layers: 24 layers
+    - num_heads: 16 (num_kv_heads=4, GQA 4:1)
+    - vocab_size: 8000
+    - latent_dim: 128
     """
-    hidden_dim: int = 1536           # Dim không gian nhúng
+    hidden_dim: int = 2048           # Dim không gian nhúng lớn
     num_heads: int = 16              # Số lượng Query Attention Heads
-    num_kv_heads: int = 4            # Số lượng Key/Value Attention Heads (GQA ratio = 4:1)
-    num_layers: int = 12             # Số lượng khối Transformer
-    mlp_ratio: float = 3.5           # SwiGLU intermediate dim = ~5376
+    num_kv_heads: int = 4            # Số lượng Key/Value Attention Heads (GQA 4:1)
+    num_layers: int = 24             # 24 Transformer Blocks (Quy mô 1.3B)
+    mlp_ratio: float = 3.5           # SwiGLU intermediate dim = 7168
     dropout: float = 0.1
     
     # Kích thước từ vựng & Latent các modality mở rộng
-    vocab_size: int = 4000           # Kích thước từ vựng rời rạc mở rộng
-    latent_dim: int = 64             # Kích thước không gian nén VAE mở rộng
-    audio_dim: int = 128             # Kích thước đặc trưng âm thanh mở rộng
-    action_dim: int = 7              # Kích thước véc-tơ hành động (6-DoF + gripper)
+    vocab_size: int = 8000           # Từ vựng rời rạc mở rộng
+    latent_dim: int = 128            # Không gian nén VAE độ phân giải cao
+    audio_dim: int = 128             # Đặc trưng âm thanh
+    action_dim: int = 7              # Véc-tơ hành động (6-DoF + gripper)
 
 
 class RMSNorm(nn.Module):
@@ -89,7 +93,7 @@ class Cosmos3AttentionMask(nn.Module):
 
 class GroupedQueryMultimodalAttention(nn.Module):
     """
-    Shared Multimodal Attention với GQA & RoPE cho quy mô lớn.
+    Shared Multimodal Attention với GQA & RoPE cho mô hình 1.3B.
     """
     def __init__(self, config: Cosmos3Config):
         super().__init__()
@@ -149,7 +153,7 @@ class SwiGLUMLP(nn.Module):
 
 
 class Cosmos3Block(nn.Module):
-    """Khối Transformer Version 4 tích hợp GQA & RoPE cho mô hình quy mô ~380M params."""
+    """Khối Transformer Version 4 quy mô 1.3B Params."""
     def __init__(self, config: Cosmos3Config):
         super().__init__()
         self.norm1 = RMSNorm(config.hidden_dim)
@@ -165,11 +169,10 @@ class Cosmos3Block(nn.Module):
 
 class Cosmos3ToyModel(nn.Module):
     """
-    Mô hình Cosmos 3 Version 4 (Large Scale MoT Model ~380M parameters):
-    - Tăng quy mô tham số hidden_dim=1536, num_layers=12.
+    Mô hình Cosmos 3 Version 4 (Large Scale MoT Model ~1.31 Billion parameters):
+    - Tăng quy mô tham số hidden_dim=2048, num_layers=24.
     - Grouped-Query Attention (GQA) & Rotary Position Embedding (RoPE).
     - RMSNorm + SwiGLU MLP.
-    - Duy trì interface tương thích 100% với benchmark suite.
     """
     def __init__(self, config: Cosmos3Config):
         super().__init__()
@@ -253,5 +256,5 @@ if __name__ == "__main__":
     config = Cosmos3Config()
     model = Cosmos3ToyModel(config)
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"[SUCCESS] Khoi tao Cosmos 3 Version 4 Model (~380M Params) thanh cong!")
-    print(f"-> Tong so luong tham so (Total Parameters): {total_params / 1e6:.2f}M")
+    print(f"[SUCCESS] Khoi tao Cosmos 3 Version 4 Model (~1.31B Params) thanh cong!")
+    print(f"-> Tong so luong tham so (Total Parameters): {total_params / 1e6:.2f}M ({total_params / 1e9:.2f}B)")

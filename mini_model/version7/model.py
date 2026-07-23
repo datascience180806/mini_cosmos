@@ -10,7 +10,7 @@ import torch.nn.functional as F
 @dataclass
 class Cosmos3Config:
     """
-    Cấu hình thông số kỹ thuật cho Version 7 (Đột phá Dual GPU T4 ~10.08 Billion Parameters)
+    Cấu hình thông số kỹ thuật cho Version 7 (Dual GPU Model Parallelism ~10.08 Billion Parameters)
     - hidden_dim: 4608
     - num_layers: 36 layers
     - num_heads: 36 (num_kv_heads=9, GQA 4:1)
@@ -169,11 +169,10 @@ class Cosmos3Block(nn.Module):
 
 class Cosmos3ToyModel(nn.Module):
     """
-    Mô hình Cosmos 3 Version 7 (Dual GPU MoT Model ~10.08 Billion parameters):
-    - Tương đương quy mô 10.08B: hidden_dim=4608, num_layers=36.
-    - Chạy song song trên Dual T4 GPUs (32GB VRAM total).
-    - Grouped-Query Attention (GQA 4:1) & Rotary Position Embedding (RoPE).
-    - RMSNorm + SwiGLU MLP.
+    Mô hình Cosmos 3 Version 7 (Dual GPU Model Parallelism ~10.08 Billion parameters):
+    - Phân bổ các tầng (Pipeline Model Parallelism) chia đều qua 2 card GPU T4.
+    - cuda:0 chứa layers 0..17, cuda:1 chứa layers 18..35.
+    - Bỏ qua hoàn toàn giới hạn VRAM 14.5GB của 1 GPU đơn lẻ.
     """
     def __init__(self, config: Cosmos3Config):
         super().__init__()
@@ -190,6 +189,29 @@ class Cosmos3ToyModel(nn.Module):
 
         self.ar_head = nn.Linear(config.hidden_dim, config.vocab_size, bias=False)
         self.dm_vision_head = nn.Linear(config.hidden_dim, config.latent_dim)
+
+    def dispatch_pipeline_parallel(self):
+        """Phân bổ các layers qua 2 card GPU T4 (cuda:0 & cuda:1)."""
+        if torch.cuda.device_count() >= 2:
+            half = len(self.blocks) // 2
+            dev0 = torch.device("cuda:0")
+            dev1 = torch.device("cuda:1")
+
+            self.ar_embedding.to(dev0)
+            self.dm_vision_proj.to(dev0)
+            self.audio_proj.to(dev0)
+            self.action_proj.to(dev0)
+
+            for idx, block in enumerate(self.blocks):
+                if idx < half:
+                    block.to(dev0)
+                else:
+                    block.to(dev1)
+
+            self.norm_f.to(dev0)
+            self.ar_head.to(dev0)
+            self.dm_vision_head.to(dev0)
+            print(f"[INFO] Dispatched {half} blocks to GPU 0 and {len(self.blocks) - half} blocks to GPU 1!")
 
     def forward(
         self,
@@ -235,10 +257,21 @@ class Cosmos3ToyModel(nn.Module):
             attn_mask = torch.triu(torch.full((seq_len_ar, seq_len_ar), float("-inf"), device=device), diagonal=1)
 
         h = x_seq
-        for block in self.blocks:
+        half_layers = len(self.blocks) // 2
+        is_multi_gpu = torch.cuda.device_count() >= 2
+
+        for i, block in enumerate(self.blocks):
+            if is_multi_gpu:
+                target_dev = torch.device("cuda:0") if i < half_layers else torch.device("cuda:1")
+                if h.device != target_dev:
+                    h = h.to(target_dev)
+                    if attn_mask is not None:
+                        attn_mask = attn_mask.to(target_dev)
+
             h = block(h, attn_mask=attn_mask)
         
-        h = self.norm_f(h)
+        if is_multi_gpu and h.device != torch.device("cuda:0"):
+            h = h.to("cuda:0")
 
         outputs = {}
 

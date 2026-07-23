@@ -21,129 +21,246 @@
 
 ---
 
-## 2. Mô Tả Chi Tiết Kiến Trúc Khối (Architectural Breakdown)
+## 2. Chi Tiết Kiến Trúc Khối & Sơ Đồ Riêng Cho Từng Phiên Bản
+
+---
 
 ### 2.1. Version 0 (`NVIDIA/Cosmos3-Nano`) - Sơ Đồ Kiến Trúc Chuẩn NVIDIA Gốc
-- **Đầu Vào Multi-Modal Encoders:**
-  - `Text Tokenizer`: Chuyển câu thoại/ngôn ngữ thành các token rời rạc.
-  - `3D Causal VAE Tokenizer`: Nén video/hình ảnh theo tỷ lệ 8x8x8 (thời gian x không gian).
-  - `Audio & Action Encoders`: Nén tín hiệu âm thanh và véc-tơ hành động 6-DoF + kẹp tay robot.
-- **Lõi Thân Mô Hình (Shared Mixture-of-Transformers - MoT Backbone):**
-  - Tầng chú ý hợp nhất (Shared Attention Layer) xử lý đồng thời luồng **Autoregressive (AR)** và **Diffusion (DM)**.
-  - **Ma Trận Attention Mask Matrix:** $Q_{AR} \times K_{AR}$ (Causal Masking), $Q_{AR} \times K_{DM} = -\infty$ (Chặn rò rỉ nhiễu sinh vào nhánh suy luận), $Q_{DM} \times [K_{AR}, K_{DM}] = 0.0$ (Full Attention).
-- **Mặt Bề Vận Hành Đa Chế Độ (Dual Runtime Surfaces):**
-  - `Reasoner Surface`: Dự đoán token ngôn ngữ/hành động tiếp theo dựa trên Causal Self-Attention.
-  - `Generator Surface`: Khử nhiễu Flow Matching / Diffusion để tái tạo hình ảnh, khung hình video và lực điều khiển.
-
----
-
-### 2.2. Version 1 (`mini_model/version1`) - Kiến Trúc PoC Khởi Tạo Nền Tảng
-- **Đầu Vào & Embeddings:**
-  - `ar_embedding`: `torch.nn.Embedding(vocab_size=1000, hidden_dim=512)`
-  - `dm_vision_proj`: `torch.nn.Linear(latent_dim=16, hidden_dim=512)`
-  - `audio_proj`: `torch.nn.Linear(audio_dim=32, hidden_dim=512)`
-  - `action_proj`: `torch.nn.Linear(action_dim=7, hidden_dim=512)`
-  - `pos_embed`: `torch.nn.Parameter` (Learned Absolute Position Embeddings 1024 tokens).
-- **Khối Transformer Block ($L=6, d_{model}=512, H=8$):**
-  - `LayerNorm`: `torch.nn.LayerNorm(512)`
-  - `SharedMultimodalAttention`: `q_proj`, `k_proj`, `v_proj`, `out_proj` (`torch.nn.Linear(512, 512)`).
-  - `MLP Block`: `torch.nn.Sequential(Linear(512, 2048), GELU(), Dropout(0.1), Linear(2048, 512))`
-- **Masking Engine:**
-  - `Cosmos3AttentionMask`: Tạo ma trận $16 \times 8$ ghép nối Causal Mask cho AR và Full Attention cho DM.
-
----
-
-### 2.3. Version 2 (`mini_model/version2`) - Cấu Trúc Khối SwiGLU & RMSNorm Chuẩn LLM
-- **Đầu Vào & Embeddings:** Mở rộng $d_{model}=1024$, `vocab_size`=2000, `latent_dim`=32.
-- **Khối Transformer Block ($L=8, d_{model}=1024, H=16$):**
-  - `RMSNorm`: `RMSNorm(dim=1024)` tính theo công thức $x \cdot \text{rsqrt}(\text{var} + \epsilon) \cdot w$.
-  - `SharedMultimodalAttention`: Mở rộng số lượng attention heads $H=16$ ($d_{head}=64$).
-  - `SwiGLU MLP`: Chuyển từ GELU sang SwiGLU:
-    $$\text{SwiGLU}(x) = W_2 \Big( \text{SiLU}(W_1 x) \odot W_3 x \Big)$$
-    Trong đó $W_1, W_3: \mathbb{R}^{1024 \to 3584}$, $W_2: \mathbb{R}^{3584 \to 1024}$.
-- **Masking Engine:** Duy trì Ma trận Attention Mask quy định cách ly $Q_{AR} \times K_{DM} = -\infty$.
-
----
-
-### 2.4. Version 3 (`mini_model/version3`) - Khối Grouped-Query Attention (GQA) & Position RoPE
-- **Đầu Vào & Embeddings:** Mở rộng $L=10$ layers, $d_{model}=1024$.
-- **Cơ Chế Mã Hóa Vị Trí:**
-  - `RotaryPositionEmbedding (RoPE)`: Nhúng tọa độ vị trí tương quan trực tiếp vào góc xoay ma trận $Q$ và $K$ theo tần số nghịch đảo $\frac{1}{10000^{2i/d}}$.
-- **Khối Transformer Block ($L=10, d_{model}=1024$):**
-  - `RMSNorm`: `RMSNorm(dim=1024)`
-  - `GroupedQueryMultimodalAttention (GQA)`:
-    - $H_Q = 16$ (Query Heads), $H_{KV} = 4$ (Key/Value Heads) $\rightarrow$ Tỷ lệ nén GQA $4:1$.
-    - `q_proj`: `Linear(1024, 1024)`, `k_proj`: `Linear(1024, 256)`, `v_proj`: `Linear(1024, 256)`.
-  - `SwiGLU MLP`: RMSNorm kết hợp SwiGLU FFN.
-
----
-
-### 2.5. Version 4 (`mini_model/version4`) - Cấu Trúc MoT Quy Mô Tỷ Tham Số (Small LLM Scale)
-- **Cấu Hướng Mở Rộng:**
-  - Chiều ẩn $d_{model}=1536$, Số lớp Transformer $L=12$, Query Heads $H_Q=16$, KV Heads $H_{KV}=4$.
-  - Mở rộng `vocab_size`=4000, `latent_dim`=64, `audio_dim`=128.
-- **Khối Transformer Block ($L=12, d_{model}=1536$):**
-  - `RMSNorm` $\to$ `GQA Attention với RoPE` ($d_{head}=96$) $\to$ `RMSNorm` $\to$ `SwiGLU FFN` ($intermediate\_dim=5376$).
-- **Masking Engine:** Ma trận Attention Mask Matrix đồng dạng.
-
----
-
-### 2.6. Version 5 (`mini_model/version5`) - Cấu Trúc Tương Đương NVIDIA Cosmos 3 Edge (4B Scale)
-- **Cấu Hướng Mở Rộng:**
-  - Chiều ẩn $d_{model}=3072$, Số lớp Transformer $L=32$, Query Heads $H_Q=24$, KV Heads $H_{KV}=6$.
-  - Mở rộng `vocab_size`=16000, `latent_dim`=256, `audio_dim`=256.
-- **Khối Transformer Block ($L=32, d_{model}=3072$):**
-  - `RMSNorm` $\to$ `GQA Attention với RoPE` ($d_{head}=128$) $\to$ `RMSNorm` $\to$ `SwiGLU FFN` ($intermediate\_dim=10752$).
-- **Precision Support:** Tương thích kiểu dữ liệu `float16` (FP16 Half Precision).
-
----
-
-### 2.7. Version 6 (`mini_model/version6`) - Cấu Trúc Tương Đương Cosmos 3 Nano Dense Backbone (8B Scale)
-- **Cấu Hướng Mở Rộng:**
-  - Chiều ẩn $d_{model}=4096$, Số lớp Transformer $L=32$, Query Heads $H_Q=32$, KV Heads $H_{KV}=8$.
-  - Mở rộng `vocab_size`=32000, `latent_dim`=256.
-- **Khối Transformer Block ($L=32, d_{model}=4096$):**
-  - `RMSNorm` $\to$ `GQA Attention với RoPE` ($d_{head}=128$) $\to$ `RMSNorm` $\to$ `SwiGLU FFN` ($intermediate\_dim=14336$).
-
----
-
-### 2.8. Version 7 (`mini_model/version7`) - Cấu Trúc Phân Bổ Song Song Đa GPU & Meta Direct Init
-- **Cấu Hướng Mở Rộng:**
-  - Chiều ẩn $d_{model}=4096$, Số lớp Transformer $L=36$, Query Heads $H_Q=32$, KV Heads $H_{KV}=8$.
-  - Mở rộng `vocab_size`=32000, `latent_dim`=256.
-- **Cơ Chế Phân Bổ Thiết Bị (Device Pipeline & Meta Allocation):**
-  - `Pure FP16 Meta Device Init`: Tạo mô hình trên `torch.device('meta')` tiêu tốn 0 MB CPU RAM, sau đó cấp phát trực tiếp bộ nhớ FP16 lên VRAM.
-  - `Device Pipeline Parallelism`:
-    - `cuda:0` (GPU 0): Nạp `ar_embedding`, `dm_vision_proj`, và Blocks $0 \to 17$.
-    - `cuda:1` (GPU 1): Nạp Blocks $18 \to 35$, sau đó chuyển kết quả h về `cuda:0` qua `norm_f`, `ar_head` và `dm_vision_head`.
-
----
-
-## 3. Sơ Đồ Khối Mermaid Chi Tiết (Có Thể Copy Vẽ Diagram)
+- **Đặc điểm kiến trúc:**
+  - Tokenizer 3D Causal VAE nén video 8x8x8 kết hợp Text Tokenizer và Action Encoders.
+  - Lõi MoT hợp nhất luồng Autoregressive (AR) và Diffusion (DM).
+  - Ma trận Attention Mask quy định chặt chẽ $Q_{AR} \times K_{DM} = -\infty$.
 
 ```mermaid
 flowchart TD
-    subgraph INPUTS["1. MULTIMODAL INPUT ENCODERS"]
-        AR_IN["Discrete Text/Vision Tokens\n(ar_tokens)"] --> AR_EMB["Embedding Layer\n(vocab_size -> d_model)"]
-        DM_IN["Noisy Video Latent\n(dm_latent)"] --> DM_PROJ["Linear Projection\n(latent_dim -> d_model)"]
-        ACT_IN["Robot Action Vectors\n(action_vectors)"] --> ACT_PROJ["Linear Projection\n(action_dim -> d_model)"]
+    subgraph V0_INPUTS["Version 0: Input Encoders"]
+        V0_TEXT["Text Prompt Tokenizer"] --> V0_EMB["Text Embedding"]
+        V0_VIDEO["Video/Image 3D VAE Tokenizer (8x8x8)"] --> V0_LATENT["VAE Latent Tokens"]
+        V0_ACT["Action/Audio Encoder"] --> V0_ACT_TOK["Action Tokens"]
     end
 
-    AR_EMB --> CAT["Concat Sequences\n[AR Tokens || DM Tokens]"]
-    DM_PROJ --> CAT
-    ACT_PROJ --> CAT
+    V0_EMB --> V0_MOT["NVIDIA Cosmos 3 Shared MoT Backbone\n(Dense 8B / 16B Total)"]
+    V0_LATENT --> V0_MOT
+    V0_ACT_TOK --> V0_MOT
 
-    subgraph BACKBONE["2. SHARED MIXTURE-OF-TRANSFORMERS (MoT) BLOCKS (L Layers)"]
-        CAT --> ROPE["Apply Rotary Position Embedding (RoPE)"]
-        ROPE --> MASK["Cosmos 3 Attention Mask Matrix\n- Q_AR x K_AR: Causal Mask\n- Q_AR x K_DM: Masked (-inf)\n- Q_DM x ALL: Full Attention (0.0)"]
-        
-        MASK --> BLOCK["Transformer Block (x L)\n- RMSNorm\n- Grouped-Query Attention (GQA 4:1)\n- RMSNorm\n- SwiGLU FFN (SiLU(W1*x) * W3*x -> W2)"]
+    subgraph V0_SURFACES["Version 0: Dual Runtime Surfaces"]
+        V0_MOT --> V0_REASONER["Reasoner Surface (AR Causal)\n- Next Token Prediction"]
+        V0_MOT --> V0_GENERATOR["Generator Surface (DM Denoising)\n- Flow Matching Video & Action Generation"]
+    end
+```
+
+---
+
+### 2.2. Version 1 (`mini_model/version1`) - Sơ Đồ Kiến Trúc PoC Thu Nhỏ (~20.5M Params)
+- **Đặc điểm kiến trúc:**
+  - Khởi tạo PoC cơ bản với `nn.Embedding` (1000, 512), `nn.Linear` (16/32/7, 512).
+  - Sử dụng Learned Absolute Position Embeddings (1024 tokens).
+  - Khối Transformer Block ($L=6, d_{model}=512, H=8$): **Standard LayerNorm** + **Standard Multi-Head Attention** + **GELU MLP** (`Linear(512->2048) -> GELU -> Linear(2048->512)`).
+
+```mermaid
+flowchart TD
+    subgraph V1_INPUTS["Version 1: Token Encoders & Absolute Pos"]
+        V1_AR["ar_tokens\n(vocab_size=1000)"] --> V1_EMB["nn.Embedding(1000, 512)"]
+        V1_DM["dm_latent\n(latent_dim=16)"] --> V1_PROJ["nn.Linear(16, 512)"]
+        V1_ACT["action_vectors\n(action_dim=7)"] --> V1_ACT_PROJ["nn.Linear(7, 512)"]
     end
 
-    BLOCK --> NORM["Final RMSNorm (norm_f)"]
+    V1_EMB --> V1_CAT["Concat Sequence + Learned Absolute Pos Embeddings"]
+    V1_PROJ --> V1_CAT
+    V1_ACT_PROJ --> V1_CAT
 
-    subgraph OUTPUTS["3. DUAL RUNTIME SURFACES"]
-        NORM --> |Split AR Tokens| REASONER["Reasoner Surface\nar_head (Linear -> vocab_size)\nOutput: Next-Token / Plan"]
-        NORM --> |Split DM Tokens| GENERATOR["Generator Surface\ndm_vision_head (Linear -> latent_dim)\nOutput: Denoised Latent / Action"]
+    subgraph V1_BLOCKS["Version 1: Standard Transformer Block (x6 Layers)"]
+        V1_CAT --> V1_MASK["Cosmos3AttentionMask Matrix\n- Q_AR x K_DM = -inf"]
+        V1_MASK --> V1_LN1["nn.LayerNorm(512)"]
+        V1_LN1 --> V1_MHA["SharedMultimodalAttention\n(Standard MHA: H=8, d_head=64)"]
+        V1_MHA --> V1_LN2["nn.LayerNorm(512)"]
+        V1_LN2 --> V1_GELU["Standard GELU MLP\nLinear(512->2048) -> GELU() -> Linear(2048->512)"]
     end
+
+    V1_GELU --> V1_OUT["nn.LayerNorm(512) -> Output Surfaces (ar_head & dm_vision_head)"]
+```
+
+---
+
+### 2.3. Version 2 (`mini_model/version2`) - Sơ Đồ Kiến Trúc Mở Rộng SwiGLU & RMSNorm (~128M Params)
+- **Đặc điểm kiến trúc:**
+  - Nâng cấp chiều ẩn $d_{model}=1024, L=8, H=16$.
+  - Thay thế LayerNorm bằng **RMSNorm** (`x * rsqrt(var + eps) * weight`).
+  - Thay thế GELU MLP bằng **SwiGLU FFN**: $W_2(\text{SiLU}(W_1 x) \odot W_3 x)$ với `mlp_ratio=3.5`.
+
+```mermaid
+flowchart TD
+    subgraph V2_INPUTS["Version 2: Scaled Encoders"]
+        V2_AR["ar_tokens (vocab=2000)"] --> V2_EMB["nn.Embedding(2000, 1024)"]
+        V2_DM["dm_latent (latent_dim=32)"] --> V2_PROJ["nn.Linear(32, 1024)"]
+    end
+
+    V2_EMB --> V2_CAT["Concat Sequence + Pos Embeddings (d_model=1024)"]
+    V2_PROJ --> V2_CAT
+
+    subgraph V2_BLOCKS["Version 2: SwiGLU + RMSNorm Block (x8 Layers)"]
+        V2_CAT --> V2_MASK["Cosmos3AttentionMask Matrix"]
+        V2_MASK --> V2_RMS1["RMSNorm(1024)"]
+        V2_RMS1 --> V2_MHA["SharedMultimodalAttention (H=16, d_head=64)"]
+        V2_MHA --> V2_RMS2["RMSNorm(1024)"]
+        V2_RMS2 --> V2_SWIGLU["SwiGLU FFN Block\nw2( SiLU(w1(x)) * w3(x) )\nw1,w3: Linear(1024->3584), w2: Linear(3584->1024)"]
+    end
+
+    V2_SWIGLU --> V2_OUT["RMSNorm(1024) -> Output Surfaces"]
+```
+
+---
+
+### 2.4. Version 3 (`mini_model/version3`) - Sơ Đồ Kiến Trúc GQA & Position RoPE (~141M Params)
+- **Đặc điểm kiến trúc:**
+  - Thay thế vị trí tuyệt đối bằng **Rotary Position Embedding (RoPE)** áp dụng trực tiếp lên $Q$ và $K$.
+  - Tích hợp **Grouped-Query Attention (GQA)** với $H_Q=16, H_{KV}=4$ (tỷ lệ nén GQA 4:1).
+
+```mermaid
+flowchart TD
+    subgraph V3_INPUTS["Version 3: RoPE + GQA Encoders"]
+        V3_AR["ar_tokens (vocab=2000)"] --> V3_EMB["nn.Embedding(2000, 1024)"]
+        V3_DM["dm_latent (latent_dim=32)"] --> V3_PROJ["nn.Linear(32, 1024)"]
+    end
+
+    V3_EMB --> V3_CAT["Concat Sequence"]
+    V3_PROJ --> V3_CAT
+
+    subgraph V3_BLOCKS["Version 3: GQA + RoPE Block (x10 Layers)"]
+        V3_CAT --> V3_RMS1["RMSNorm(1024)"]
+        V3_RMS1 --> V3_ROPE["Apply Rotary Position Embedding (RoPE) to Q & K"]
+        V3_ROPE --> V3_GQA["GroupedQueryMultimodalAttention\nH_Q = 16, H_KV = 4 (Ratio 4:1)"]
+        V3_GQA --> V3_RMS2["RMSNorm(1024)"]
+        V3_RMS2 --> V3_SWIGLU["SwiGLU FFN Block"]
+    end
+
+    V3_SWIGLU --> V3_OUT["RMSNorm(1024) -> Dual Outputs"]
+```
+
+---
+
+### 2.5. Version 4 (`mini_model/version4`) - Sơ Đồ Kiến Trúc Quy Mô Small LLM (~1.34B Params)
+- **Đặc điểm kiến trúc:**
+  - Mở rộng quy mô $d_{model}=2048, L=24, H_Q=16, H_{KV}=4$, SwiGLU intermediate dim = 5376.
+  - Nâng `vocab_size`=4000, `latent_dim`=64.
+
+```mermaid
+flowchart TD
+    subgraph V4_INPUTS["Version 4: 1.34B Large Scale Encoders"]
+        V4_AR["ar_tokens (vocab=4000)"] --> V4_EMB["nn.Embedding(4000, 2048)"]
+        V4_DM["dm_latent (latent_dim=64)"] --> V4_PROJ["nn.Linear(64, 2048)"]
+    end
+
+    V4_EMB --> V4_CAT["Concat Sequence (d_model=2048)"]
+    V4_PROJ --> V4_CAT
+
+    subgraph V4_BLOCKS["Version 4: 24-Layer MoT Transformer Engine"]
+        V4_CAT --> V4_RMS1["RMSNorm(2048)"]
+        V4_RMS1 --> V4_GQA["GQA Attention + RoPE (H_Q=16, H_KV=4, d_head=128)"]
+        V4_GQA --> V4_RMS2["RMSNorm(2048)"]
+        V4_RMS2 --> V4_SWIGLU["SwiGLU FFN (Linear 2048 -> 5376 -> 2048)"]
+    end
+
+    V4_SWIGLU --> V4_OUT["RMSNorm(2048) -> Dual Heads"]
+```
+
+---
+
+### 2.6. Version 5 (`mini_model/version5`) - Sơ Đồ Kiến Trúc Quy Mô Cosmos 3 Edge FP16 (~4.03B Params)
+- **Đặc điểm kiến trúc:**
+  - Mở rộng quy mô $d_{model}=3072, L=32, H_Q=24, H_{KV}=6$, SwiGLU intermediate dim = 10752.
+  - Vận hành chuẩn kiểu dữ liệu **FP16 Half Precision**.
+
+```mermaid
+flowchart TD
+    subgraph V5_INPUTS["Version 5: 4.03B FP16 Scale Encoders"]
+        V5_AR["ar_tokens (vocab=16000)"] --> V5_EMB["nn.Embedding(16000, 3072)"]
+        V5_DM["dm_latent (latent_dim=256)"] --> V5_PROJ["nn.Linear(256, 3072)"]
+    end
+
+    V5_EMB --> V5_CAT["Concat Sequence (FP16 Mode, d_model=3072)"]
+    V5_PROJ --> V5_CAT
+
+    subgraph V5_BLOCKS["Version 5: 32-Layer FP16 MoT Backbone"]
+        V5_CAT --> V5_RMS1["RMSNorm(3072)"]
+        V5_RMS1 --> V5_GQA["GQA + RoPE (H_Q=24, H_KV=6, d_head=128)"]
+        V5_GQA --> V5_RMS2["RMSNorm(3072)"]
+        V5_RMS2 --> V5_SWIGLU["SwiGLU FFN (Linear 3072 -> 10752 -> 3072)"]
+    end
+
+    V5_SWIGLU --> V5_OUT["RMSNorm(3072) -> FP16 Dual Heads"]
+```
+
+---
+
+### 2.7. Version 6 (`mini_model/version6`) - Sơ Đồ Kiến Trúc Quy Mô Cosmos 3 Nano Dense Backbone (~7.24B Params)
+- **Đặc điểm kiến trúc:**
+  - Mở rộng quy mô $d_{model}=4096, L=32, H_Q=32, H_{KV}=8$, `vocab_size`=32000.
+  - Đạt mốc giới hạn tối đa VRAM trên 1 card GPU T4 (14.31 GB VRAM).
+
+```mermaid
+flowchart TD
+    subgraph V6_INPUTS["Version 6: 7.24B Single GPU Maximum Scale"]
+        V6_AR["ar_tokens (vocab=32000)"] --> V6_EMB["nn.Embedding(32000, 4096)"]
+        V6_DM["dm_latent (latent_dim=256)"] --> V6_PROJ["nn.Linear(256, 4096)"]
+    end
+
+    V6_EMB --> V6_CAT["Concat Sequence (d_model=4096)"]
+    V6_PROJ --> V6_CAT
+
+    subgraph V6_BLOCKS["Version 6: 32-Layer FP16 MoT Engine (1x T4 GPU: 14.31GB VRAM)"]
+        V6_CAT --> V6_RMS1["RMSNorm(4096)"]
+        V6_RMS1 --> V6_GQA["GQA + RoPE (H_Q=32, H_KV=8, d_head=128)"]
+        V6_GQA --> V6_RMS2["RMSNorm(4096)"]
+        V6_RMS2 --> V6_SWIGLU["SwiGLU FFN (Linear 4096 -> 14336 -> 4096)"]
+    end
+
+    V6_SWIGLU --> V6_OUT["RMSNorm(4096) -> Dual Output Surfaces"]
+```
+
+---
+
+### 2.8. Version 7 (`mini_model/version7`) - Sơ Đồ Kiến Trúc Đa GPU Pipeline & Meta Direct Init (~8.12B Params)
+- **Đặc điểm kiến trúc:**
+  - **Meta Device Initialization (`torch.device('meta')`):** Khởi tạo mô hình 0 MB CPU RAM, sau đó `to_empty()` trực tiếp trên GPU VRAM.
+  - **Device Pipeline Parallelism:**
+    - `cuda:0` (GPU 0): Nạp `ar_embedding`, `dm_vision_proj`, và Blocks $0 \to 17$ (~8.52 GB VRAM).
+    - `cuda:1` (GPU 1): Nạp Blocks $18 \to 35$, sau đó chuyển kết quả $h$ về `cuda:0` để qua `norm_f` và các Output Heads.
+
+```mermaid
+flowchart TD
+    subgraph V7_INIT["Version 7: Pure FP16 Meta Device Init (0 MB CPU RAM)"]
+        V7_META["torch.device('meta') Shell Creation"] --> V7_ALLOC["to_empty() Direct GPU Allocation"]
+    end
+
+    subgraph V7_GPU0["GPU 0 (cuda:0 - 8.52 GB VRAM)"]
+        V7_ALLOC --> V7_EMB0["ar_embedding & dm_vision_proj"]
+        V7_EMB0 --> V7_BLK0["Transformer Blocks 0 -> 17\n(d_model=4096, H_Q=32, H_KV=8)"]
+    end
+
+    V7_BLK0 --> |Tensor Transfer cuda:0 -> cuda:1| V7_GPU1
+
+    subgraph V7_GPU1["GPU 1 (cuda:1 - 8.52 GB VRAM)"]
+        V7_GPU1_BLK["Transformer Blocks 18 -> 35\n(d_model=4096, H_Q=32, H_KV=8)"]
+    end
+
+    V7_GPU1_BLK --> |Tensor Transfer cuda:1 -> cuda:0| V7_HEADS
+
+    subgraph V7_HEADS["GPU 0 Output Surface"]
+        V7_HEADS_RUN["RMSNorm(4096) -> ar_head & dm_vision_head"]
+    end
+```
+
+---
+
+## 3. Quy Trình Chạy Benchmark Cho Các Phiên Bản
+
+Để đo lường bất kỳ phiên bản nào trên Kaggle Notebook:
+
+```bash
+# Cập nhật repo từ GitHub
+!git pull
+
+# Chạy benchmark cho Version 7 trên Dual GPU T4
+!python benchmark.py --version version7 --batch_size 2 --num_runs 50 --fp16 --multi_gpu
 ```

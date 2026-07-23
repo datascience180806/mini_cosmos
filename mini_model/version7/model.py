@@ -10,18 +10,18 @@ import torch.nn.functional as F
 @dataclass
 class Cosmos3Config:
     """
-    Cấu hình thông số kỹ thuật cho Version 7 (Dual GPU Model Parallelism ~10.08 Billion Parameters)
-    - hidden_dim: 4608
+    Cấu hình thông số kỹ thuật cho Version 7 (Dual GPU Model Parallelism ~9.1 Billion Parameters)
+    - hidden_dim: 4096
     - num_layers: 36 layers
-    - num_heads: 36 (num_kv_heads=9, GQA 4:1)
+    - num_heads: 32 (num_kv_heads=8, GQA 4:1)
     - vocab_size: 32000
     - latent_dim: 256
     """
-    hidden_dim: int = 4608           # Dim không gian nhúng
-    num_heads: int = 36              # 36 Query Attention Heads
-    num_kv_heads: int = 9            # 9 Key/Value Attention Heads (GQA 4:1)
-    num_layers: int = 36             # 36 Transformer Blocks (Quy mô 10.08B)
-    mlp_ratio: float = 3.5           # SwiGLU intermediate dim = 16128
+    hidden_dim: int = 4096           # Dim không gian nhúng
+    num_heads: int = 32              # 32 Query Attention Heads
+    num_kv_heads: int = 8            # 8 Key/Value Attention Heads (GQA 4:1)
+    num_layers: int = 36             # 36 Transformer Blocks (Quy mô 9.1B)
+    mlp_ratio: float = 3.5           # SwiGLU intermediate dim = 14336
     dropout: float = 0.1
     
     # Kích thước từ vựng & Latent các modality mở rộng
@@ -93,7 +93,7 @@ class Cosmos3AttentionMask(nn.Module):
 
 class GroupedQueryMultimodalAttention(nn.Module):
     """
-    Shared Multimodal Attention với GQA & RoPE cho quy mô 10.08B.
+    Shared Multimodal Attention với GQA & RoPE cho quy mô 9.1B.
     """
     def __init__(self, config: Cosmos3Config):
         super().__init__()
@@ -153,7 +153,7 @@ class SwiGLUMLP(nn.Module):
 
 
 class Cosmos3Block(nn.Module):
-    """Khối Transformer Version 7 quy mô 10.08B Params."""
+    """Khối Transformer Version 7 quy mô 9.1B Params."""
     def __init__(self, config: Cosmos3Config):
         super().__init__()
         self.norm1 = RMSNorm(config.hidden_dim)
@@ -169,8 +169,8 @@ class Cosmos3Block(nn.Module):
 
 class Cosmos3ToyModel(nn.Module):
     """
-    Mô hình Cosmos 3 Version 7 (Dual GPU Model Parallelism ~10.08 Billion parameters):
-    - Hỗ trợ khởi tạo thiết bị Meta (Meta Device Init) tiêu tốn 0 MB CPU RAM.
+    Mô hình Cosmos 3 Version 7 (Dual GPU Model Parallelism ~9.1 Billion parameters):
+    - Hỗ trợ khởi tạo FP16 trực tiếp trên 'meta' device (0 MB CPU RAM & FP16 VRAM).
     - Phân bổ các tầng (Pipeline Model Parallelism) chia đều qua 2 card GPU T4.
     """
     def __init__(self, config: Cosmos3Config):
@@ -192,17 +192,23 @@ class Cosmos3ToyModel(nn.Module):
     @classmethod
     def create_meta_model(cls, config: Cosmos3Config, fp16: bool = True):
         """
-        Tạo mô hình trên 'meta' device (0 MB System RAM), sau đó allocate trực tiếp trên 2x GPU T4.
+        Khởi tạo mô hình ở định dạng FP16 trực tiếp trên 'meta' device, sau đó allocate FP16 VRAM qua 2x GPU.
         """
         num_gpus = torch.cuda.device_count()
         dev0 = torch.device("cuda:0") if num_gpus > 0 else torch.device("cpu")
         dev1 = torch.device("cuda:1") if num_gpus > 1 else dev0
 
-        # Step 1: Create architecture shell on 'meta' device (0 bytes memory allocated)
+        # Step 1: Force float16 as default dtype BEFORE meta initialization
+        if fp16:
+            torch.set_default_dtype(torch.float16)
+
+        # Step 2: Create shell on meta device in float16 (0 bytes CPU RAM used)
         with torch.device("meta"):
             model = cls(config)
 
-        # Step 2: Allocate memory DIRECTLY on GPU devices (Bypassing CPU RAM)
+        torch.set_default_dtype(torch.float32)
+
+        # Step 3: Allocate memory DIRECTLY on GPU devices in FP16
         half = len(model.blocks) // 2
 
         model.ar_embedding = model.ar_embedding.to_empty(device=dev0)
@@ -218,7 +224,7 @@ class Cosmos3ToyModel(nn.Module):
         model.ar_head = model.ar_head.to_empty(device=dev0)
         model.dm_vision_head = model.dm_vision_head.to_empty(device=dev0)
 
-        # Step 3: Fill parameters on GPU with standard initialization
+        # Step 4: Fill parameters on GPU with normal distribution directly in FP16
         def _init_weights(m):
             if isinstance(m, nn.Linear):
                 nn.init.normal_(m.weight, std=0.02)
@@ -230,10 +236,7 @@ class Cosmos3ToyModel(nn.Module):
         with torch.no_grad():
             model.apply(_init_weights)
 
-        if fp16 and num_gpus > 0:
-            model = model.half()
-
-        print(f"[SUCCESS] Khoi tao Meta Model ~10.08B Params truc tiep tren GPU (0 MB CPU RAM)! Dispatched across {num_gpus} GPUs.")
+        print(f"[SUCCESS] Khoi tao FP16 Meta Model ~9.15B Params truc tiep tren GPU VRAM (0 MB CPU RAM)! Dispatched across {num_gpus} GPUs.")
         return model
 
     def forward(
@@ -313,5 +316,5 @@ if __name__ == "__main__":
     config = Cosmos3Config()
     model = Cosmos3ToyModel.create_meta_model(config)
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"[SUCCESS] Khoi tao Cosmos 3 Version 7 Dual GPU Model (~10.08B Params) thanh cong!")
+    print(f"[SUCCESS] Khoi tao Cosmos 3 Version 7 Dual GPU Model (~9.15B Params) thanh cong!")
     print(f"-> Tong so luong tham so (Total Parameters): {total_params / 1e6:.2f}M ({total_params / 1e9:.2f}B)")

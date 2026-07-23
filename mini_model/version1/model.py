@@ -86,7 +86,7 @@ class SharedMultimodalAttention(nn.Module):
 
         if attn_mask is not None:
             # Broadcast mask cho tất cả batch và heads: [1, 1, seq_len, seq_len]
-            scores = scores + attn_mask.unsqueeze(0).unsqueeze(0)
+            scores = scores + attn_mask.unsqueeze(0).unsqueeze(0).to(scores.dtype)
 
         attn_weights = F.softmax(scores, dim=-1)
         attn_weights = self.dropout(attn_weights)

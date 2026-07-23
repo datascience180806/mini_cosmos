@@ -125,7 +125,7 @@ class GroupedQueryMultimodalAttention(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
         if attn_mask is not None:
-            scores = scores + attn_mask.unsqueeze(0).unsqueeze(0)
+            scores = scores + attn_mask.unsqueeze(0).unsqueeze(0).to(scores.dtype)
 
         attn_weights = F.softmax(scores, dim=-1)
         attn_weights = self.dropout(attn_weights)

@@ -7,6 +7,28 @@
 
 ## 1. Bảng So Sánh Tổng Quan (Benchmark Matrix)
 
+### 💡 Giải Thích Cơ Chế Đánh Giá Các Phiên Bản
+Để đánh giá và so sánh sức mạnh giữa các phiên bản mô hình, dự án sử dụng bộ đo lường tự động (`benchmark.py`) kiểm tra dựa trên **4 tiêu chuẩn thực tế**:
+
+1. **Sức chứa Bộ não AI & Bộ nhớ Card đồ họa:**
+   * **Kích thước mô hình (Số tham số):** Số lượng nơ-ron/tham số của bộ não AI (từ **20 Triệu** ở bản thử nghiệm nhỏ đến **8.12 Tỷ** ở bản chạy đa GPU).
+   * **Bộ nhớ GPU tiêu thụ (VRAM):** Dung lượng bộ nhớ card đồ họa cần thiết để chứa mô hình (tính bằng MB hoặc GB).
+
+2. **Tốc độ Phản hồi & Tải công việc:**
+   * **Tốc độ xử lý (Độ trễ):** Thời gian AI cần để xử lý xong 1 yêu cầu (tính bằng miligiây - ms).
+   * **Số khung hình/giây (Throughput):** Số lượng hình ảnh hay mẫu dữ liệu AI xử lý được trong 1 giây (số càng cao thì AI chạy càng mượt).
+
+3. **Độ Sai Số Khi Làm Việc (Chất lượng Suy luận & Sinh ảnh):**
+   * **Độ sai số suy luận chữ (AR Loss):** Mức độ sai lệch khi AI đưa ra câu trả lời chữ hoặc lập kế hoạch (chỉ số càng thấp thì suy luận càng chuẩn).
+   * **Độ sai số sinh video/ảnh (DM Loss):** Mức độ lệch nét khi AI tự tưởng tượng và vẽ ra khung hình tiếp theo của nhà máy.
+
+4. **Màng Chặn Nhiễu (Chống rò rỉ hình ảnh vào chữ):**
+   * Tự động kiểm tra màng bảo vệ cách ly chú ý. Đảm bảo khi AI đang vẽ/sinh ra các bức ảnh bị nhiễu thì những hình ảnh đó **hoàn toàn không làm ảnh hưởng hay gây sai lệch cho suy luận chữ**.
+
+---
+
+### Bảng Chỉ Số Đo Lường Thực Tế:
+
 | Thông Số Đánh Giá | Version 0 (Bản Cosmos 3 Gốc) | Version 1 (Bản Thử Nghiệm Nhỏ) | Version 2 (Nâng Cấp Khối Chuẩn) | Version 3 (Tối Ưu Góc Nhìn & Vị Trí) | Version 4 (Bản Quy Mô 1.34B) | Version 5 (Bản Quy Mô 4.03B) | Version 6 (Bản Giới Hạn 1 Card GPU) | Version 7 (Bản Đa GPU 2 Card 8.12B) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **Kích Thước Mô Hình (Số Tham Số)** | **16 Tỷ (8 Tỷ Lõi)** | **20.49 Triệu** | **127.99 Triệu** | **140.57 Triệu** | **1.34 Tỷ** | **4.03 Tỷ** | **7.24 Tỷ** | **8.12 Tỷ** |

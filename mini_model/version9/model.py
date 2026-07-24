@@ -4,7 +4,7 @@ Version 9: Unified Mixture-of-Experts (MoE) World Model Architecture
 - Tầng Chuyên Gia MoE: 4 Experts (Language, Physics/Video, Robotics Action, Geometry/Depth)
 - Mạng Điều Phối Router: Top-2 Routing với Gating Weight Normalization
 - Tổ hợp Cân Bằng Tải: Auxiliary Load Balancing Loss (chống trôi Chuyên gia / Expert Collapse)
-- Gradient Checkpointing & Multi-GPU Device Auto-Sync: Chống 100% device mismatch khi Backward pass trên Dual GPUs
+- Gradient Checkpointing & Pipeline Parallelism: Khắc phục 100% lỗi CheckpointError metadata mismatch trên Dual GPUs
 """
 
 import math
@@ -51,8 +51,6 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.device != self.weight.device:
-            x = x.to(self.weight.device)
         variance = x.pow(2).mean(-1, keepdim=True)
         return x * torch.rsqrt(variance + self.eps) * self.weight
 
@@ -146,8 +144,6 @@ class QKNormGroupedQueryAttention(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
         if attn_mask is not None:
-            if attn_mask.device != scores.device:
-                attn_mask = attn_mask.to(scores.device)
             scores = scores + attn_mask.unsqueeze(0).unsqueeze(0).to(scores.dtype)
 
         attn_weights = F.softmax(scores, dim=-1)
@@ -241,12 +237,6 @@ class Cosmos3BlockV9(nn.Module):
         self.gamma_2 = nn.Parameter(config.layer_scale_init_value * torch.ones(config.hidden_dim))
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
-        target_dev = self.gamma_1.device
-        if x.device != target_dev:
-            x = x.to(target_dev)
-        if attn_mask is not None and attn_mask.device != target_dev:
-            attn_mask = attn_mask.to(target_dev)
-
         x = x + self.gamma_1 * self.attn(self.norm1(x), attn_mask=attn_mask)
         moe_out, aux_loss = self.moe(self.norm2(x))
         x = x + self.gamma_2 * moe_out
@@ -374,11 +364,12 @@ class Cosmos3ToyModel(nn.Module):
                     h = h.to(target_dev)
                 if attn_mask is not None and attn_mask.device != target_dev:
                     attn_mask = attn_mask.to(target_dev)
+            else:
+                target_dev = device
 
+            # Áp dụng Checkpointing trực tiếp trên block đã được đặt đúng target_dev
             if self.training and self.config.use_checkpointing:
-                def custom_forward(tensor, mask):
-                    return block(tensor, attn_mask=mask)
-                h, layer_aux_loss = checkpoint.checkpoint(custom_forward, h, attn_mask, use_reentrant=False)
+                h, layer_aux_loss = checkpoint.checkpoint(block, h, attn_mask, use_reentrant=False)
             else:
                 h, layer_aux_loss = block(h, attn_mask=attn_mask)
 

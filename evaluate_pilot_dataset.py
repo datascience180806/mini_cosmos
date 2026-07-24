@@ -32,8 +32,16 @@ def evaluate_dense_base(version: str = "version8", num_steps: int = 10, batch_si
     num_gpus = torch.cuda.device_count()
     print(f"[INFO] Pytorch CUDA Available: {torch.cuda.is_available()} | GPU Count: {num_gpus}")
 
-    # 2. Khởi tạo mô hình dùng Meta Device Init (0 MB CPU RAM)
-    model = model_cls.create_meta_model(config, fp16=use_fp16)
+    # 2. Khởi tạo mô hình an toàn (hỗ trợ cả Meta Device Init và Standard Init)
+    if hasattr(model_cls, "create_meta_model"):
+        model = model_cls.create_meta_model(config, fp16=use_fp16)
+    else:
+        model = model_cls(config)
+        if torch.cuda.is_available():
+            model = model.to("cuda:0")
+            if use_fp16:
+                model = model.half()
+
     model.train()
 
     total_params = sum(p.numel() for p in model.parameters())

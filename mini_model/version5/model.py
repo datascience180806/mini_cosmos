@@ -10,23 +10,24 @@ import torch.nn.functional as F
 @dataclass
 class Cosmos3Config:
     """
-    Cấu hình thông số kỹ thuật cho Version 5 (Tương đương quy mô NVIDIA Cosmos 3 Edge ~3.93 Billion Parameters)
+    Cấu hình thông số kỹ thuật cho Version 5 (Base FP16 Architecture ~4.03B Params)
+    Quy mô Cosmos 3 Edge Base:
     - hidden_dim: 3072
     - num_layers: 32 layers
     - num_heads: 24 (num_kv_heads=6, GQA 4:1)
     - vocab_size: 16000
     - latent_dim: 256
     """
-    hidden_dim: int = 3072           # Dim không gian nhúng siêu lớn
+    hidden_dim: int = 3072           # Dim không gian nhúng
     num_heads: int = 24              # 24 Query Attention Heads
     num_kv_heads: int = 6            # 6 Key/Value Attention Heads (GQA 4:1)
-    num_layers: int = 32             # 32 Transformer Blocks (Quy mô 3.93B)
+    num_layers: int = 32             # 32 Transformer Blocks (Quy mô 4.03B)
     mlp_ratio: float = 3.5           # SwiGLU intermediate dim = 10752
     dropout: float = 0.1
     
     # Kích thước từ vựng & Latent các modality mở rộng
     vocab_size: int = 16000          # Từ vựng rời rạc mở rộng
-    latent_dim: int = 256            # Không gian nén VAE độ phân giải siêu cao
+    latent_dim: int = 256            # Không gian nén VAE độ phân giải cao
     audio_dim: int = 256             # Đặc trưng âm thanh
     action_dim: int = 7              # Véc-tơ hành động (6-DoF + gripper)
 
@@ -92,9 +93,7 @@ class Cosmos3AttentionMask(nn.Module):
 
 
 class GroupedQueryMultimodalAttention(nn.Module):
-    """
-    Shared Multimodal Attention với GQA & RoPE cho quy mô 3.93B.
-    """
+    """Attention Layer với GQA & RoPE cho Version 5."""
     def __init__(self, config: Cosmos3Config):
         super().__init__()
         self.config = config
@@ -107,7 +106,7 @@ class GroupedQueryMultimodalAttention(nn.Module):
         self.k_proj = nn.Linear(config.hidden_dim, config.num_kv_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(config.hidden_dim, config.num_kv_heads * self.head_dim, bias=False)
         self.out_proj = nn.Linear(config.num_heads * self.head_dim, config.hidden_dim, bias=False)
-        
+
         self.rope = RotaryPositionEmbedding(self.head_dim)
         self.dropout = nn.Dropout(config.dropout)
 
@@ -152,8 +151,8 @@ class SwiGLUMLP(nn.Module):
         return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
 
 
-class Cosmos3Block(nn.Module):
-    """Khối Transformer Version 5 quy mô 3.93B Params."""
+class Cosmos3BlockV5(nn.Module):
+    """Khối Transformer Version 5."""
     def __init__(self, config: Cosmos3Config):
         super().__init__()
         self.norm1 = RMSNorm(config.hidden_dim)
@@ -168,12 +167,7 @@ class Cosmos3Block(nn.Module):
 
 
 class Cosmos3ToyModel(nn.Module):
-    """
-    Mô hình Cosmos 3 Version 5 (Ultra Large Scale MoT Model ~3.93 Billion parameters):
-    - Tiệm cận quy mô Cosmos 3 Edge 4B: hidden_dim=3072, num_layers=32.
-    - Grouped-Query Attention (GQA 4:1) & Rotary Position Embedding (RoPE).
-    - RMSNorm + SwiGLU MLP.
-    """
+    """Mô hình Cosmos 3 Version 5 (Base FP16 Architecture ~4.03B Params)."""
     def __init__(self, config: Cosmos3Config):
         super().__init__()
         self.config = config
@@ -184,11 +178,57 @@ class Cosmos3ToyModel(nn.Module):
         self.action_proj = nn.Linear(config.action_dim, config.hidden_dim)
 
         self.mask_generator = Cosmos3AttentionMask()
-        self.blocks = nn.ModuleList([Cosmos3Block(config) for _ in range(config.num_layers)])
+        self.blocks = nn.ModuleList([Cosmos3BlockV5(config) for _ in range(config.num_layers)])
         self.norm_f = RMSNorm(config.hidden_dim)
 
         self.ar_head = nn.Linear(config.hidden_dim, config.vocab_size, bias=False)
         self.dm_vision_head = nn.Linear(config.hidden_dim, config.latent_dim)
+
+    @classmethod
+    def create_meta_model(cls, config: Cosmos3Config, fp16: bool = True):
+        """
+        Tạo mô hình Version 5 trên 'meta' device (0 MB System RAM), sau đó allocate trực tiếp trên GPU VRAM.
+        """
+        num_gpus = torch.cuda.device_count()
+        dev0 = torch.device("cuda:0") if num_gpus > 0 else torch.device("cpu")
+        dev1 = torch.device("cuda:1") if num_gpus > 1 else dev0
+
+        if fp16:
+            torch.set_default_dtype(torch.float16)
+
+        with torch.device("meta"):
+            model = cls(config)
+
+        torch.set_default_dtype(torch.float32)
+
+        half = len(model.blocks) // 2
+
+        model.ar_embedding = model.ar_embedding.to_empty(device=dev0)
+        model.dm_vision_proj = model.dm_vision_proj.to_empty(device=dev0)
+        model.audio_proj = model.audio_proj.to_empty(device=dev0)
+        model.action_proj = model.action_proj.to_empty(device=dev0)
+
+        for idx, block in enumerate(model.blocks):
+            target_dev = dev0 if (idx < half or num_gpus < 2) else dev1
+            block.to_empty(device=target_dev)
+
+        model.norm_f = model.norm_f.to_empty(device=dev0)
+        model.ar_head = model.ar_head.to_empty(device=dev0)
+        model.dm_vision_head = model.dm_vision_head.to_empty(device=dev0)
+
+        def _init_weights(m):
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, std=0.02)
+            elif isinstance(m, nn.Embedding):
+                nn.init.normal_(m.weight, std=0.02)
+            elif isinstance(m, RMSNorm):
+                nn.init.ones_(m.weight)
+
+        with torch.no_grad():
+            model.apply(_init_weights)
+
+        print(f"[SUCCESS] Khoi tao Version 5 Base Model (~4.03B Params) Meta Shell thanh cong! Dispatched across {num_gpus} GPUs.")
+        return model
 
     def forward(
         self,
@@ -234,9 +274,22 @@ class Cosmos3ToyModel(nn.Module):
             attn_mask = torch.triu(torch.full((seq_len_ar, seq_len_ar), float("-inf"), device=device), diagonal=1)
 
         h = x_seq
-        for block in self.blocks:
+        half_layers = len(self.blocks) // 2
+        is_multi_gpu = torch.cuda.device_count() >= 2
+
+        for i, block in enumerate(self.blocks):
+            if is_multi_gpu:
+                target_dev = torch.device("cuda:0") if i < half_layers else torch.device("cuda:1")
+                if h.device != target_dev:
+                    h = h.to(target_dev)
+                    if attn_mask is not None:
+                        attn_mask = attn_mask.to(target_dev)
+
             h = block(h, attn_mask=attn_mask)
         
+        if is_multi_gpu and h.device != torch.device("cuda:0"):
+            h = h.to("cuda:0")
+
         h = self.norm_f(h)
 
         outputs = {}
@@ -254,7 +307,7 @@ class Cosmos3ToyModel(nn.Module):
 
 if __name__ == "__main__":
     config = Cosmos3Config()
-    model = Cosmos3ToyModel(config)
+    model = Cosmos3ToyModel.create_meta_model(config)
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"[SUCCESS] Khoi tao Cosmos 3 Version 5 Model (~3.93B Params) thanh cong!")
+    print(f"[SUCCESS] Khoi tao Cosmos 3 Version 5 Base Model (~4.03B Params) thanh cong!")
     print(f"-> Tong so luong tham so (Total Parameters): {total_params / 1e6:.2f}M ({total_params / 1e9:.2f}B)")

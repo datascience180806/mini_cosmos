@@ -110,11 +110,11 @@ class QKNormGroupedQueryAttention(nn.Module):
         self.k_proj = nn.Linear(config.hidden_dim, config.num_kv_heads * self.head_dim, bias=False)
         self.v_proj = nn.Linear(config.hidden_dim, config.num_kv_heads * self.head_dim, bias=False)
         self.out_proj = nn.Linear(config.num_heads * self.head_dim, config.hidden_dim, bias=False)
-        
-        # QK-Normalization (Chuẩn hóa Query & Key nâng cao)
+
+        # QK-Norm Modules
         self.q_norm = RMSNorm(self.head_dim)
         self.k_norm = RMSNorm(self.head_dim)
-
+        
         self.rope = RotaryPositionEmbedding(self.head_dim)
         self.dropout = nn.Dropout(config.dropout)
 
@@ -125,7 +125,7 @@ class QKNormGroupedQueryAttention(nn.Module):
         k = self.k_proj(x).view(batch_size, seq_len, self.num_kv_heads, self.head_dim)
         v = self.v_proj(x).view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
 
-        # Áp dụng QK-Norm trước khi xoay RoPE
+        # Áp dụng QK-Norm trước khi nhân dot product attention
         q = self.q_norm(q).transpose(1, 2)
         k = self.k_norm(k).transpose(1, 2)
 
@@ -165,8 +165,7 @@ class SwiGLUMLP(nn.Module):
 
 class Cosmos3BlockV8(nn.Module):
     """
-    Khối Transformer Version 8 (~4.03B Params):
-    Tích hợp RMSNorm + QK-Norm Attention + LayerScale Residual Connections + SwiGLU FFN.
+    Khối Transformer Version 8 với QK-Norm và LayerScale Residual Connection.
     Cơ chế LayerScale giúp ổn định gradient lan truyền qua 32 tầng mạng sâu.
     """
     def __init__(self, config: Cosmos3Config):
@@ -208,6 +207,52 @@ class Cosmos3ToyModel(nn.Module):
 
         self.ar_head = nn.Linear(config.hidden_dim, config.vocab_size, bias=False)
         self.dm_vision_head = nn.Linear(config.hidden_dim, config.latent_dim)
+
+    @classmethod
+    def create_meta_model(cls, config: Cosmos3Config, fp16: bool = True):
+        """
+        Tạo mô hình Version 8 trên 'meta' device (0 MB System RAM), sau đó allocate trực tiếp trên GPU VRAM.
+        """
+        num_gpus = torch.cuda.device_count()
+        dev0 = torch.device("cuda:0") if num_gpus > 0 else torch.device("cpu")
+        dev1 = torch.device("cuda:1") if num_gpus > 1 else dev0
+
+        if fp16:
+            torch.set_default_dtype(torch.float16)
+
+        with torch.device("meta"):
+            model = cls(config)
+
+        torch.set_default_dtype(torch.float32)
+
+        half = len(model.blocks) // 2
+
+        model.ar_embedding = model.ar_embedding.to_empty(device=dev0)
+        model.dm_vision_proj = model.dm_vision_proj.to_empty(device=dev0)
+        model.audio_proj = model.audio_proj.to_empty(device=dev0)
+        model.action_proj = model.action_proj.to_empty(device=dev0)
+
+        for idx, block in enumerate(model.blocks):
+            target_dev = dev0 if (idx < half or num_gpus < 2) else dev1
+            block.to_empty(device=target_dev)
+
+        model.norm_f = model.norm_f.to_empty(device=dev0)
+        model.ar_head = model.ar_head.to_empty(device=dev0)
+        model.dm_vision_head = model.dm_vision_head.to_empty(device=dev0)
+
+        def _init_weights(m):
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, std=0.02)
+            elif isinstance(m, nn.Embedding):
+                nn.init.normal_(m.weight, std=0.02)
+            elif isinstance(m, RMSNorm):
+                nn.init.ones_(m.weight)
+
+        with torch.no_grad():
+            model.apply(_init_weights)
+
+        print(f"[SUCCESS] Khoi tao Version 8 QK-Norm Model (~4.03B Params) Meta Shell thanh cong! Dispatched across {num_gpus} GPUs.")
+        return model
 
     def forward(
         self,
@@ -253,9 +298,22 @@ class Cosmos3ToyModel(nn.Module):
             attn_mask = torch.triu(torch.full((seq_len_ar, seq_len_ar), float("-inf"), device=device), diagonal=1)
 
         h = x_seq
-        for block in self.blocks:
+        half_layers = len(self.blocks) // 2
+        is_multi_gpu = torch.cuda.device_count() >= 2
+
+        for i, block in enumerate(self.blocks):
+            if is_multi_gpu:
+                target_dev = torch.device("cuda:0") if i < half_layers else torch.device("cuda:1")
+                if h.device != target_dev:
+                    h = h.to(target_dev)
+                    if attn_mask is not None:
+                        attn_mask = attn_mask.to(target_dev)
+
             h = block(h, attn_mask=attn_mask)
         
+        if is_multi_gpu and h.device != torch.device("cuda:0"):
+            h = h.to("cuda:0")
+
         h = self.norm_f(h)
 
         outputs = {}
@@ -273,7 +331,7 @@ class Cosmos3ToyModel(nn.Module):
 
 if __name__ == "__main__":
     config = Cosmos3Config()
-    model = Cosmos3ToyModel(config)
+    model = Cosmos3ToyModel.create_meta_model(config)
     total_params = sum(p.numel() for p in model.parameters())
     print(f"[SUCCESS] Khoi tao Cosmos 3 Version 8 QK-Norm Model (~4.03B Params) thanh cong!")
     print(f"-> Tong so luong tham so (Total Parameters): {total_params / 1e6:.2f}M ({total_params / 1e9:.2f}B)")

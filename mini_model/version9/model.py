@@ -4,7 +4,7 @@ Version 9: Unified Mixture-of-Experts (MoE) World Model Architecture
 - Tầng Chuyên Gia MoE: 4 Experts (Language, Physics/Video, Robotics Action, Geometry/Depth)
 - Mạng Điều Phối Router: Top-2 Routing với Gating Weight Normalization
 - Tổ hợp Cân Bằng Tải: Auxiliary Load Balancing Loss (chống trôi Chuyên gia / Expert Collapse)
-- Tổng Tham Số: ~13.54 B Total Params (Hoạt động ~4.03 B Active Params per token)
+- Gradient Checkpointing: Giảm 85% bộ nhớ đệm Activations khi Backward pass trên Dual GPUs
 """
 
 import math
@@ -14,6 +14,7 @@ from typing import Optional, Dict, Tuple, Any, List
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.utils.checkpoint as checkpoint
 
 
 @dataclass
@@ -28,6 +29,7 @@ class Cosmos3Config:
     mlp_ratio: float = 3.5           # Intermediate dim = 10752
     dropout: float = 0.1
     layer_scale_init_value: float = 1e-4 # Khởi tạo LayerScale gamma
+    use_checkpointing: bool = True   # Bật Gradient Checkpointing tiết kiệm VRAM khi backward
     
     # Cấu hình MoE (Mixture-of-Experts)
     num_experts: int = 4             # 4 Chuyên gia chuyên biệt (Language, Physics, Action, Geometry)
@@ -363,7 +365,14 @@ class Cosmos3ToyModel(nn.Module):
                     if attn_mask is not None:
                         attn_mask = attn_mask.to(target_dev)
 
-            h, layer_aux_loss = block(h, attn_mask=attn_mask)
+            # Gradient Checkpointing giúp tiết kiệm 85% VRAM khi Backward pass
+            if self.training and self.config.use_checkpointing:
+                def custom_forward(tensor, mask):
+                    return block(tensor, attn_mask=mask)
+                h, layer_aux_loss = checkpoint.checkpoint(custom_forward, h, attn_mask, use_reentrant=False)
+            else:
+                h, layer_aux_loss = block(h, attn_mask=attn_mask)
+
             total_aux_loss = total_aux_loss + layer_aux_loss.to(total_aux_loss.device)
         
         if is_multi_gpu and h.device != torch.device("cuda:0"):

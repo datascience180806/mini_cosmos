@@ -1,6 +1,7 @@
 """
 Script Train Thử Nghiệm Quy Mô Nhỏ (Pilot Training Loop)
-đổi mới hỗ trợ Version 9 MoE World Model Architecture (~7.26B Total Params / ~4.03B Active)
+đổi mới hỗ trợ Version 9 MoE World Model Architecture (~13.54B Total Params / ~4.03B Active)
+tích hợp Gradient Checkpointing và VRAM Memory Cache Cleaning.
 """
 
 import time
@@ -29,9 +30,9 @@ def train_pilot(
 
     # 1. Khởi tạo mô hình
     if version.lower() == "version9":
-        config = V9Config()
+        config = V9Config(use_checkpointing=True)
         model_cls = V9Model
-        print("[INFO] Models: Version 9 (Unified Mixture-of-Experts MoE ~7.26B Total / ~4.03B Active)")
+        print("[INFO] Models: Version 9 (Unified Mixture-of-Experts MoE ~13.54B Total / ~4.03B Active)")
     elif version.lower() == "version8":
         config = V8Config()
         model_cls = V8Model
@@ -126,6 +127,8 @@ def train_pilot(
                 optimizer.step()
 
             optimizer.zero_grad()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         if not (torch.isnan(ar_loss) or torch.isnan(dm_loss)):
             running_ar_loss += ar_loss.item() * accum_steps

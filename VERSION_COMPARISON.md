@@ -14,7 +14,7 @@
 > - **Lưu ý:** Bảng chỉ số này **KHÔNG PHẢI là chỉ số độ chính xác hay chất lượng sinh ảnh/video của mô hình sau khi đã được huấn luyện xong (Post-training Quality Metrics)**.
 
 ### 💡 Cơ Chế Đánh Giá Các Phiên Bản
-Bộ đo lường tự động (`benchmark.py`) kiểm tra mô hình dựa trên **4 nhóm chỉ số kỹ thuật tiêu chuẩn**:
+Bộ đo lường tự động (`benchmark.py`) kiểm tra mô hình dựa trên **4 nhóm chỉ số kỹ thuật tiêu chuẩn** *(Mô phỏng theo quy trình Hardware Profiling Benchmark chính thức của NVIDIA được công bố trong bài báo [Cosmos World Foundation Model Platform](https://arxiv.org/abs/2501.03575) và kho tài liệu [NVIDIA Cosmos Inference Benchmarks](https://github.com/NVIDIA/Cosmos))*:
 
 1. **Quy Mô Mô Hình & Bộ Nhớ (Model Scale & Hardware Memory):**
    * **Total Parameters (Số lượng tham số):** Tổng số tham số của mô hình (từ **20M** ở bản thử nghiệm nhỏ đến **8.12B** ở bản chạy đa GPU).

@@ -51,7 +51,7 @@ Bộ đo lường tự động (`benchmark.py`) kiểm tra mô hình dựa trên
 
 ## 2. Kết Luận & Bài Học Rút Ra Từ Bảng Thực Nghiệm (Key Insights & Conclusions)
 
-Dựa trên bảng chỉ số thực nghiệm chi tiết từ **Version 0 đến Version 8**, dự án rút ra **5 kết luận kỹ thuật quan trọng**:
+Dựa trên bảng chỉ số thực nghiệm chi tiết từ **Version 0 đến Version 8**, dự án rút ra **6 kết luận kỹ thuật quan trọng**:
 
 ### 1. Đánh Đổi Giữa Quy Mô & Tốc Độ Suy Luận (Scaling Trade-off)
 - **Hiện tượng:** Khi số lượng tham số mở rộng từ **20M** lên **8.12B** (gấp ~400 lần), độ trễ suy luận (`Forward Latency`) tăng từ **5.27 ms** lên **102.22 ms** và thông lượng (`Throughput`) giảm từ **758.70 fps** xuống **19.57 fps**.
@@ -65,13 +65,19 @@ Dựa trên bảng chỉ số thực nghiệm chi tiết từ **Version 0 đến
 - **Hiện tượng:** **Version 6 (7.24B)** chạm trần giới hạn phần cứng của 1 card GPU T4 16GB.
 - **Chi tiết:** Bộ nhớ VRAM bị chiếm dụng tới **14.31 GB (98.2% công suất)**, gây ra hiện tượng ngạt băng thông bộ nhớ (Memory Bandwidth Bottleneck) làm thông lượng tụt xuống mốc thấp nhất **11.55 fps**.
 
-### 4. Đột Phá Khi Chuyển Sang 2 Card GPU Song Song (Dual-GPU Pipeline Scaling)
-- **Hiện tượng:** Khi nâng cấp từ Version 6 (1 GPU, 7.24B, 11.55 fps) sang **Version 0 (7.24B trên 2 GPU)** và **Version 7 (2 GPU T4, 8.12B, 19.57 fps)**:
-  - Ở Version 0 (Dense Backbone 7.24B trên 2 GPU), mức VRAM tiêu thụ hạ từ **14.31 GB xuống 7.63 GB / GPU** (giảm ngạt bộ nhớ 47%), giúp thông lượng tăng vọt từ **11.55 fps lên 22.09 fps** (gấp 1.9 lần!).
-  - Ở Version 7 (8.12B trên 2 GPU), mức VRAM là **8.52 GB / GPU** và thông lượng đạt **19.57 fps**.
+### 4. Kết Luận Riêng Cho Lõi Dense Base Version 0 (Hiệu Năng Dual-GPU Pipeline)
+- **Hiện tượng:** Khi chạy Lõi Dense Base 7.24B của Version 0 trên 2 Card GPU T4 song song:
+  - Mức VRAM chiếm dụng trên mỗi GPU giảm mạnh từ **14.31 GB (Version 6)** xuống còn **7.63 GB / GPU** (chỉ chiếm ~52% bộ nhớ mỗi card).
+  - Tốc độ thông lượng tăng vọt **gấp 1.91 lần** (từ **11.55 fps lên 22.09 fps**).
+- **Bài học ứng dụng:** Lõi Dense Base 7.24B khi chạy song song qua 2 GPU không bị hiện tượng ngạt băng thông bộ nhớ, hoàn toàn đủ khả năng gánh vác các tác vụ suy luận đa phương tiện thời gian thực trên hệ thống Server nội bộ.
+
+### 5. Đột Phá Khi Chuyển Sang 2 Card GPU Song Song (Dual-GPU Pipeline Scaling)
+- **Hiện tượng:** Khi nâng cấp từ Version 6 (1 GPU, 7.24B, 11.55 fps) sang **Version 7 (2 GPU T4, 8.12B, 19.57 fps)**:
+  - Mức VRAM tiêu thụ trên mỗi card hạ từ **14.31 GB xuống 8.52 GB** (giảm ngạt bộ nhớ 40%).
+  - Tốc độ thông lượng **tăng vọt 1.7 lần** (từ **11.55 fps lên 19.57 fps**), mặc dù số tham số lớn hơn (8.12B).
 - **Bài học ứng dụng:** Kỹ thuật `Device Pipeline Parallelism` phân chia tầng lớp kết hợp `Meta Device Init` (khởi tạo 0 MB CPU RAM) là giải pháp tối ưu để chạy các siêu mô hình vượt mốc 8 Tỷ tham số trên hạ tầng phần cứng giới hạn.
 
-### 5. Sự Ổn Định Tuyệt Đối Của Attention Mask Isolation & Cải Tiến Từ Version 8
+### 6. Sự Ổn Định Tuyệt Đối Của Attention Mask Isolation & Cải Tiến Từ Version 8
 - **Hiện tượng:** Tất cả các phiên bản (từ V0 đến V8) đều đạt chỉ số `attention_mask_isolation_verified` = **PASSED [OK] 100%**.
 - **Kết quả Version 8:** Ở mốc 4B, kiến trúc Version 8 (QK-Norm + LayerScale) cải thiện sai số sinh ảnh (`DM MSE Loss` giảm từ `1.3329` xuống `1.3032`) mà chỉ tốn thêm **2.95 ms** độ trễ, vẫn duy trì tốc độ rất cao **27.54 fps**.
 

@@ -7,7 +7,6 @@ import time
 import argparse
 import torch
 import torch.nn as nn
-import torch.optim as optim
 
 from mini_model.version8.model import Cosmos3ToyModel as V8Model, Cosmos3Config as V8Config
 from mini_model.version5.model import Cosmos3ToyModel as V5Model, Cosmos3Config as V5Config
@@ -42,14 +41,13 @@ def evaluate_dense_base(version: str = "version8", num_steps: int = 10, batch_si
             if use_fp16:
                 model = model.half()
 
-    model.train()
+    model.eval()
 
     total_params = sum(p.numel() for p in model.parameters())
     print(f"[INFO] Total Dense Base Parameters: {total_params / 1e6:.2f} M ({total_params / 1e9:.2f} B)")
 
-    # 3. Khởi tạo DataLoader & Optimizer
+    # 3. Khởi tạo DataLoader & Loss Criteria
     loader = PilotDatasetLoader(vocab_size=config.vocab_size, latent_dim=config.latent_dim, action_dim=config.action_dim)
-    optimizer = optim.AdamW(model.parameters(), lr=1e-4)
     
     ar_criterion = nn.CrossEntropyLoss()
     dm_criterion = nn.MSELoss()
@@ -57,61 +55,57 @@ def evaluate_dense_base(version: str = "version8", num_steps: int = 10, batch_si
     dev0 = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if (use_fp16 and torch.cuda.is_available()) else torch.float32
 
-    print("\n[INFO] Dang chay vong lap danh gia Pilot 4-Modality Dataset...")
+    print("\n[INFO] Dang chay vong lap danh gia Pilot 4-Modality Dataset (Evaluation Mode)...")
     
     total_time_ms = 0.0
     ar_losses = []
     dm_losses = []
     cos_sims = []
 
-    for step in range(1, num_steps + 1):
-        step_start = time.time()
+    with torch.no_grad():
+        for step in range(1, num_steps + 1):
+            step_start = time.time()
 
-        # Lay batch gia lap tu dataset loader
-        batch = loader.get_pilot_batch(
-            batch_size=batch_size,
-            seq_len_ar=32,
-            seq_len_dm=16,
-            device=dev0,
-            dtype=dtype
-        )
+            # Lay batch tu dataset loader
+            batch = loader.get_pilot_batch(
+                batch_size=batch_size,
+                seq_len_ar=32,
+                seq_len_dm=16,
+                device=dev0,
+                dtype=dtype
+            )
 
-        ar_tokens = batch["ar_tokens"]
-        dm_latent = batch["dm_latent"]
-        action_vectors = batch["action_vectors"]
+            ar_tokens = batch["ar_tokens"]
+            dm_latent = batch["dm_latent"]
+            action_vectors = batch["action_vectors"]
 
-        ar_targets = torch.randint(0, config.vocab_size, ar_tokens.shape, device=dev0)
-        dm_targets = torch.randn_like(dm_latent)
+            ar_targets = torch.randint(0, config.vocab_size, ar_tokens.shape, device=dev0)
+            dm_targets = torch.randn_like(dm_latent)
 
-        optimizer.zero_grad()
-        outputs = model(
-            ar_tokens=ar_tokens,
-            dm_latent=dm_latent,
-            action_vectors=action_vectors,
-            mode="both"
-        )
+            outputs = model(
+                ar_tokens=ar_tokens,
+                dm_latent=dm_latent,
+                action_vectors=action_vectors,
+                mode="both"
+            )
 
-        ar_logits = outputs["ar_logits"].float()
-        dm_pred = outputs["dm_predicted_latent"].float()
+            ar_logits = outputs["ar_logits"].float()
+            dm_pred = outputs["dm_predicted_latent"].float()
 
-        ar_loss = ar_criterion(ar_logits.view(-1, config.vocab_size), ar_targets.view(-1))
-        dm_loss = dm_criterion(dm_pred, dm_targets.float())
-        
-        # Cosine Similarity cho DM latent
-        cos_sim = torch.cosine_similarity(dm_pred.view(-1), dm_targets.float().view(-1), dim=0).item()
+            ar_loss = ar_criterion(ar_logits.view(-1, config.vocab_size), ar_targets.view(-1))
+            dm_loss = dm_criterion(dm_pred, dm_targets.float())
+            
+            # Cosine Similarity cho DM latent
+            cos_sim = torch.cosine_similarity(dm_pred.view(-1), dm_targets.float().view(-1), dim=0).item()
 
-        total_loss = ar_loss + dm_loss
-        total_loss.backward()
-        optimizer.step()
+            elapsed_ms = (time.time() - step_start) * 1000
+            total_time_ms += elapsed_ms
 
-        elapsed_ms = (time.time() - step_start) * 1000
-        total_time_ms += elapsed_ms
+            ar_losses.append(ar_loss.item())
+            dm_losses.append(dm_loss.item())
+            cos_sims.append(cos_sim)
 
-        ar_losses.append(ar_loss.item())
-        dm_losses.append(dm_loss.item())
-        cos_sims.append(cos_sim)
-
-        print(f" Step [{step:02d}/{num_steps:02d}] | Latency: {elapsed_ms:.2f} ms | AR Loss: {ar_loss.item():.4f} | DM Loss: {dm_loss.item():.4f} | Cos Sim: {cos_sim:.4f}")
+            print(f" Step [{step:02d}/{num_steps:02d}] | Latency: {elapsed_ms:.2f} ms | AR Loss: {ar_loss.item():.4f} | DM Loss: {dm_loss.item():.4f} | Cos Sim: {cos_sim:.4f}")
 
     avg_latency = total_time_ms / num_steps
     avg_throughput = (batch_size * 1000.0) / avg_latency

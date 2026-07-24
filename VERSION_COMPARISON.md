@@ -29,17 +29,17 @@ Bộ đo lường tự động (`benchmark.py`) kiểm tra mô hình dựa trên
 
 ### Bảng Chỉ Số Đo Lường Thực Tế:
 
-| Thông Số Đánh Giá | Version 0 (Cosmos 3 Baseline) | Version 1 (Mini PoC) | Version 2 (Scaled LLM) | Version 3 (GQA + RoPE) | Version 4 (1.34B Scale) | Version 5 (4.03B FP16) | Version 6 (7.24B Single GPU) | Version 7 (8.12B Dual GPU) |
-| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Total Parameters** | **16 B (8B Dense)** | **20.49 M** | **127.99 M** | **140.57 M** | **1,342.30 M** | **4,026.76 M** | **7,244.92 M (7.24B)** | **8,117.37 M (8.12B)** |
-| **Number of GPUs** | Datacenter | 1x GPU | 1x GPU | 1x GPU | 1x GPU | 1x GPU T4 | **1x GPU T4 (Max 98.2%)** | **2x GPU T4 (Dual GPU)** |
-| **Precision** | FP8 / BF16 | FP32 | FP32 | FP32 | FP32 | **FP16** | **FP16** | **FP16 (Meta Device Init)** |
-| **Peak VRAM Usage** | **~18,000 MB** | **139.78 MB** | **702.38 MB** | **810.40 MB** | **6,424.15 MB** | **8,443.60 MB** | **14,306.24 MB (14.31GB)** | **8,521.79 MB (8.52GB)** |
-| **Forward Latency (ms)** | N/A | **5.27 ms** | **20.44 ms** | **23.09 ms** | **208.90 ms** | **69.62 ms** | **86.58 ms** | **102.22 ms** |
-| **Throughput (fps)** | N/A | **758.70 fps** | **195.74 fps** | **173.24 fps** | **19.15 fps** | **28.73 fps** | **11.55 fps** | **19.57 fps** |
-| **AR Loss** | N/A | `7.1093` | `7.7275` | `7.7695` | `9.0605` | `9.9545` | `10.4755` | `82.4236` |
-| **DM MSE Loss** | N/A | `1.2332` | `1.3119` | `1.4106` | `1.3204` | `1.3345` | `1.3359` | `399.7594` |
-| **Attention Mask Isolation** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** |
+| Thông Số Đánh Giá | Version 0 (Cosmos 3 Baseline) | Version 1 (Mini PoC) | Version 2 (Scaled LLM) | Version 3 (GQA + RoPE) | Version 4 (1.34B Scale) | Version 5 (4.03B Base FP16) | Version 6 (7.24B Single GPU) | Version 7 (8.12B Dual GPU) | Version 8 (4.03B QK-Norm + LayerScale) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Total Parameters** | **16 B (8B Dense)** | **20.49 M** | **127.99 M** | **140.57 M** | **1,342.30 M** | **4,026.76 M** | **7,244.92 M (7.24B)** | **8,117.37 M (8.12B)** | **4,026.76 M (4.03B)** |
+| **Number of GPUs** | Datacenter | 1x GPU | 1x GPU | 1x GPU | 1x GPU | 1x GPU T4 | **1x GPU T4 (Max 98.2%)** | **2x GPU T4 (Dual GPU)** | **1x GPU T4** |
+| **Precision** | FP8 / BF16 | FP32 | FP32 | FP32 | FP32 | **FP16** | **FP16** | **FP16 (Meta Device Init)** | **FP16** |
+| **Peak VRAM Usage** | **~18,000 MB** | **139.78 MB** | **702.38 MB** | **810.40 MB** | **6,424.15 MB** | **8,443.60 MB** | **14,306.24 MB (14.31GB)** | **8,521.79 MB (8.52GB)** | TBD *(Đo trên Kaggle)* |
+| **Forward Latency (ms)** | N/A | **5.27 ms** | **20.44 ms** | **23.09 ms** | **208.90 ms** | **69.62 ms** | **86.58 ms** | **102.22 ms** | TBD *(Đo trên Kaggle)* |
+| **Throughput (fps)** | N/A | **758.70 fps** | **195.74 fps** | **173.24 fps** | **19.15 fps** | **28.73 fps** | **11.55 fps** | **19.57 fps** | TBD *(Đo trên Kaggle)* |
+| **AR Loss** | N/A | `7.1093` | `7.7275` | `7.7695` | `9.0605` | `9.9545` | `10.4755` | `82.4236` | TBD |
+| **DM MSE Loss** | N/A | `1.2332` | `1.3119` | `1.4106` | `1.3204` | `1.3345` | `1.3359` | `399.7594` | TBD |
+| **Attention Mask Isolation** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** |
 
 ---
 
@@ -216,14 +216,14 @@ flowchart TD
 
 ---
 
-### 3.6. Version 5 (`mini_model/version5`) - Quy Mô Cosmos 3 Edge FP16 (~4.03B Params)
+### 3.6. Version 5 (`mini_model/version5`) - Quy Mô Cosmos 3 Edge FP16 Base (~4.03B Params)
 - **Mô tả kiến trúc:**
   - Chiều ẩn `hidden_dim`=3072, `num_layers`=32, Query Heads $H_Q=24$, KV Heads $H_{KV}=6$.
   - Tương thích chế độ nén kiểu dữ liệu **FP16 Half Precision**.
 
 ```mermaid
 flowchart TD
-    subgraph V5_INPUTS["Version 5: 4.03B FP16 Scale Encoders"]
+    subgraph V5_INPUTS["Version 5: 4.03B FP16 Base Scale Encoders"]
         V5_AR["ar_tokens (vocab=16000)"] --> V5_EMB["Embedding Layer (3072 dim)"]
         V5_DM["dm_latent (latent_dim=256)"] --> V5_PROJ["Linear Projection (3072 dim)"]
     end
@@ -303,6 +303,37 @@ flowchart TD
 
 ---
 
+### 3.9. Version 8 (`mini_model/version8`) - Biến Thể Kiến Trúc QK-Norm + LayerScale (~4.03B Params)
+- **Mô tả kiến trúc:**
+  - **Đồng quy mô 4.03B với Version 5** (`hidden_dim`=3072, `num_layers`=32, $H_Q=24, H_{KV}=6$) để thực hiện thí nghiệm so sánh đối đầu (Ablation Study) ở mốc 4B.
+  - **QK-Norm (RMSNorm on Query & Key):** Áp dụng RMSNorm trực tiếp trên ma trận Query ($Q$) và Key ($K$) trước khi nhân dot-product attention, triệt tiêu hoàn toàn hiện tượng bùng nổ điểm số chú ý (Attention Score Explosion) trong FP16.
+  - **LayerScale Residual Connections:** Gắn hệ số tự học $\gamma$ (`gamma_1`, `gamma_2` khởi tạo $10^{-4}$) vào đầu ra của các tầng Attention và MLP, giúp gradient ổn định tuyệt đối qua 32 tầng mạng sâu.
+
+```mermaid
+flowchart TD
+    subgraph V8_INPUTS["Version 8: 4.03B QK-Norm Scale Encoders"]
+        V8_AR["ar_tokens (vocab=16000)"] --> V8_EMB["Embedding Layer (3072 dim)"]
+        V8_DM["dm_latent (latent_dim=256)"] --> V8_PROJ["Linear Projection (3072 dim)"]
+    end
+
+    V8_EMB --> V8_CAT["Concat Sequence (FP16 Mode, 3072 dim)"]
+    V8_PROJ --> V8_CAT
+
+    subgraph V8_BLOCKS["Version 8: 32-Layer QK-Norm + LayerScale Engine"]
+        V8_CAT --> V8_RMS1["RMSNorm Layer (3072 dim)"]
+        V8_RMS1 --> V8_QK["QK-Norm (RMSNorm on Q & K) + RoPE"]
+        V8_QK --> V8_GQA["GQA Attention Layer (H_Q=24, H_KV=6)"]
+        V8_GQA --> V8_LS1["LayerScale Residual (gamma_1 * Attention Output)"]
+        V8_LS1 --> V8_RMS2["RMSNorm Layer (3072 dim)"]
+        V8_RMS2 --> V8_SWIGLU["SwiGLU FFN Layer (3072 -> 10752 -> 3072)"]
+        V8_SWIGLU --> V8_LS2["LayerScale Residual (gamma_2 * MLP Output)"]
+    end
+
+    V8_LS2 --> V8_OUT["RMSNorm Layer -> FP16 Dual Output Heads"]
+```
+
+---
+
 ## 4. Quy Trình Chạy Benchmark Cho Các Phiên Bản
 
 Để đo lường bất kỳ phiên bản nào trên Kaggle Notebook:
@@ -311,6 +342,7 @@ flowchart TD
 # Cập nhật repo từ GitHub
 !git pull
 
-# Chạy benchmark cho Version 7 trên Dual GPU T4
-!python benchmark.py --version version7 --batch_size 2 --num_runs 50 --fp16 --multi_gpu
+# Chạy benchmark so sánh Version 5 (Base 4B) và Version 8 (QK-Norm 4B)
+!python benchmark.py --version version5 --batch_size 2 --num_runs 50 --fp16
+!python benchmark.py --version version8 --batch_size 2 --num_runs 50 --fp16
 ```

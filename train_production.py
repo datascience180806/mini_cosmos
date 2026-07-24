@@ -1,15 +1,16 @@
 """
 Production Fine-Tuning & Training Pipeline for Cosmos 3 MoE World Model (Version 9 / Version 8)
 - Đích nhắm: Huấn luyện thực tế (5,000 - 20,000 steps) cho bài toán sản xuất nhà máy / AI công nghiệp.
-- Tính năng cao cấp:
-  1. Nạp và xử lý luồng dữ liệu đa phương tiện từ Hugging Face qua dataset_loader.py.
-  2. Lưu Checkpoint trọng số định kỳ (.pt) vào thư mục ./checkpoints/.
+- Tính năng chống Tràn Ổ Đĩa Kaggle Disk Full:
+  1. Tự động ghi đè/xóa file checkpoint cũ, chỉ duy trì 1 file 'cosmos3_{version}_latest.pt' mới nhất (~7.2GB).
+  2. Nạp và xử lý luồng dữ liệu đa phương tiện từ Hugging Face qua dataset_loader.py.
   3. Khả năng Resume Fine-Tuning từ Checkpoint đã lưu.
   4. Lịch điều chỉnh Learning Rate: Cosine Annealing Scheduler kết hợp Warmup.
   5. Kỹ thuật Tích lũy Gradient (Gradient Accumulation) và Cắt Gradient (Gradient Clipping) chống tràn VRAM.
 """
 
 import os
+import glob
 import time
 import argparse
 import math
@@ -183,18 +184,25 @@ def run_production_training(
             running_aux_loss = 0.0
             valid_steps = 0
 
-        # Periodic Checkpoint Saving
+        # Periodic Checkpoint Saving - Chống đầy ổ đĩa Kaggle
         if step % save_every == 0 or step == total_steps:
-            save_path = os.path.join(checkpoint_dir, f"cosmos3_{version}_step{step:05d}.pt")
-            print(f"\n[CHECKPOINT] Dang luu Trong so Model tai: {save_path}...")
+            # Xóa các file .pt cũ để không tràn đĩa 20GB của Kaggle
+            old_files = glob.glob(os.path.join(checkpoint_dir, f"cosmos3_{version}_*.pt"))
+            for f in old_files:
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+
+            save_path = os.path.join(checkpoint_dir, f"cosmos3_{version}_latest.pt")
+            print(f"\n[CHECKPOINT] Dang luu Trong so Model (Ghi de an toan) tai: {save_path}...")
             torch.save({
                 "step": step,
                 "version": version,
                 "model_state_dict": model.state_dict(),
-                "optimizer_state_dict": optimizer.state_dict(),
                 "config": config
             }, save_path)
-            print("[CHECKPOINT] Luu Checkpoint thanh cong!\n")
+            print(f"[CHECKPOINT] Luu Checkpoint Step {step} thanh cong! (Xoa file cu, dung luong dia an toan)\n")
 
     total_elapsed = time.time() - start_train_time
     print("=" * 80)

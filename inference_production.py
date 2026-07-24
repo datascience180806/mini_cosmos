@@ -41,6 +41,12 @@ def run_production_inference(checkpoint_path: str = None, version: str = "versio
     else:
         model = model_cls(config).cuda().half()
 
+    # Tự động tìm file checkpoint latest nếu không truyền đường dẫn
+    if checkpoint_path is None:
+        default_ckpt = f"./checkpoints/cosmos3_{version}_latest.pt"
+        if os.path.exists(default_ckpt):
+            checkpoint_path = default_ckpt
+
     # 3. Nạp Checkpoint nếu có
     if checkpoint_path and os.path.exists(checkpoint_path):
         print(f"[CHECKPOINT] Dang nap khoi trong so tu: {checkpoint_path}")

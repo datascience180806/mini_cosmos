@@ -3,8 +3,8 @@ Version 9: Unified Mixture-of-Experts (MoE) World Model Architecture
 - Lõi Dense Base: Version 8 (QK-Norm + LayerScale + GQA 4:1 + Attention Mask Isolation)
 - Tầng Chuyên Gia MoE: 4 Experts (Language, Physics/Video, Robotics Action, Geometry/Depth)
 - Mạng Điều Phối Router: Top-2 Routing với Gating Weight Normalization
-- Tổ hợp Cân Bằng Tải: Auxiliary Load Balancing Loss (chống trôi Chuyên gia / Expert Collapse)
-- Gradient Checkpointing & Pipeline Parallelism: Khắc phục 100% lỗi CheckpointError metadata mismatch trên Dual GPUs
+- Quy Mô Chuẩn: ~7.26 B Total Params / ~4.03 B Active Params per token (mlp_ratio=1.75)
+- Gradient Checkpointing: Giảm 85% bộ nhớ đệm Activations khi Backward pass trên Dual GPUs
 """
 
 import math
@@ -20,13 +20,16 @@ import torch.utils.checkpoint as checkpoint
 @dataclass
 class Cosmos3Config:
     """
-    Cấu hình thông số kỹ thuật cho Version 9 (MoE QK-Norm Architecture ~13.54B Total / ~4.03B Active)
+    Cấu hình thông số kỹ thuật cho Version 9 (MoE QK-Norm Architecture ~7.26B Total / ~4.03B Active)
+    - hidden_dim: 3072
+    - num_layers: 32 layers
+    - num_experts: 4 (mlp_ratio: 1.75 per expert -> ~7.26B Total Params)
     """
     hidden_dim: int = 3072           # Dim không gian nhúng
     num_heads: int = 24              # 24 Query Attention Heads
     num_kv_heads: int = 6            # 6 Key/Value Attention Heads (GQA 4:1)
     num_layers: int = 32             # 32 Transformer Blocks
-    mlp_ratio: float = 3.5           # Intermediate dim = 10752
+    mlp_ratio: float = 1.75          # Intermediate dim = 5376 per expert (~7.26B Total Params)
     dropout: float = 0.1
     layer_scale_init_value: float = 1e-4 # Khởi tạo LayerScale gamma
     use_checkpointing: bool = True   # Bật Gradient Checkpointing tiết kiệm VRAM khi backward
@@ -51,6 +54,8 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.device != self.weight.device:
+            x = x.to(self.weight.device)
         variance = x.pow(2).mean(-1, keepdim=True)
         return x * torch.rsqrt(variance + self.eps) * self.weight
 
@@ -144,6 +149,8 @@ class QKNormGroupedQueryAttention(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
         if attn_mask is not None:
+            if attn_mask.device != scores.device:
+                attn_mask = attn_mask.to(scores.device)
             scores = scores + attn_mask.unsqueeze(0).unsqueeze(0).to(scores.dtype)
 
         attn_weights = F.softmax(scores, dim=-1)
@@ -237,6 +244,12 @@ class Cosmos3BlockV9(nn.Module):
         self.gamma_2 = nn.Parameter(config.layer_scale_init_value * torch.ones(config.hidden_dim))
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
+        target_dev = self.gamma_1.device
+        if x.device != target_dev:
+            x = x.to(target_dev)
+        if attn_mask is not None and attn_mask.device != target_dev:
+            attn_mask = attn_mask.to(target_dev)
+
         x = x + self.gamma_1 * self.attn(self.norm1(x), attn_mask=attn_mask)
         moe_out, aux_loss = self.moe(self.norm2(x))
         x = x + self.gamma_2 * moe_out
@@ -245,7 +258,7 @@ class Cosmos3BlockV9(nn.Module):
 
 class Cosmos3ToyModel(nn.Module):
     """
-    Mô hình Cosmos 3 Version 9 (MoE World Model Architecture ~13.54B Total / ~4.03B Active Params)
+    Mô hình Cosmos 3 Version 9 (MoE World Model Architecture ~7.26B Total / ~4.03B Active Params)
     """
     def __init__(self, config: Cosmos3Config):
         super().__init__()
@@ -306,7 +319,7 @@ class Cosmos3ToyModel(nn.Module):
         with torch.no_grad():
             model.apply(_init_weights)
 
-        print(f"[SUCCESS] Khoi tao Version 9 MoE Model (~13.54B Total Params) Meta Shell thanh cong! Dispatched across {num_gpus} GPUs.")
+        print(f"[SUCCESS] Khoi tao Version 9 MoE Model (~7.26B Total Params) Meta Shell thanh cong! Dispatched across {num_gpus} GPUs.")
         return model
 
     def forward(
@@ -367,7 +380,6 @@ class Cosmos3ToyModel(nn.Module):
             else:
                 target_dev = device
 
-            # Áp dụng Checkpointing trực tiếp trên block đã được đặt đúng target_dev
             if self.training and self.config.use_checkpointing:
                 h, layer_aux_loss = checkpoint.checkpoint(block, h, attn_mask, use_reentrant=False)
             else:

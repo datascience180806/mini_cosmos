@@ -4,7 +4,7 @@ Version 9: Unified Mixture-of-Experts (MoE) World Model Architecture
 - Tầng Chuyên Gia MoE: 4 Experts (Language, Physics/Video, Robotics Action, Geometry/Depth)
 - Mạng Điều Phối Router: Top-2 Routing với Gating Weight Normalization
 - Tổ hợp Cân Bằng Tải: Auxiliary Load Balancing Loss (chống trôi Chuyên gia / Expert Collapse)
-- Tổng Tham Số: ~7.26 B Total Params (Hoạt động ~4.03 B Active Params per token)
+- Tổng Tham Số: ~13.54 B Total Params (Hoạt động ~4.03 B Active Params per token)
 """
 
 import math
@@ -19,7 +19,7 @@ import torch.nn.functional as F
 @dataclass
 class Cosmos3Config:
     """
-    Cấu hình thông số kỹ thuật cho Version 9 (MoE QK-Norm Architecture ~7.26B Total / ~4.03B Active)
+    Cấu hình thông số kỹ thuật cho Version 9 (MoE QK-Norm Architecture ~13.54B Total / ~4.03B Active)
     """
     hidden_dim: int = 3072           # Dim không gian nhúng
     num_heads: int = 24              # 24 Query Attention Heads
@@ -201,7 +201,6 @@ class Cosmos3MoELayer(nn.Module):
         out_flat = torch.zeros_like(x_flat)
 
         for i in range(self.num_experts):
-            # Tìm các tokens mà expert i được chọn (ở bất kỳ vị trí top-k nào)
             mask = (topk_indices == i)
             token_idx, topk_pos = torch.where(mask)
 
@@ -212,14 +211,10 @@ class Cosmos3MoELayer(nn.Module):
                 out_flat.index_add_(0, token_idx, expert_output * gate_weight)
 
         # 4. Tính Auxiliary Load Balancing Loss
-        # density_i: Tỉ lệ token chọn expert i
         tokens_per_expert = torch.bincount(topk_indices.view(-1), minlength=self.num_experts).float()
         density = tokens_per_expert / (batch_size * seq_len * self.num_experts_per_tok)
-        
-        # prob_i: Xác suất trung bình phân bổ cho expert i
         prob = routing_weights.mean(dim=0)
         
-        # Aux Loss = num_experts * sum(density_i * prob_i)
         aux_loss = self.num_experts * torch.sum(density * prob)
 
         out = out_flat.view(batch_size, seq_len, hidden_dim)
@@ -248,7 +243,7 @@ class Cosmos3BlockV9(nn.Module):
 
 class Cosmos3ToyModel(nn.Module):
     """
-    Mô hình Cosmos 3 Version 9 (MoE World Model Architecture ~7.26B Total / ~4.03B Active Params)
+    Mô hình Cosmos 3 Version 9 (MoE World Model Architecture ~13.54B Total / ~4.03B Active Params)
     """
     def __init__(self, config: Cosmos3Config):
         super().__init__()
@@ -309,7 +304,7 @@ class Cosmos3ToyModel(nn.Module):
         with torch.no_grad():
             model.apply(_init_weights)
 
-        print(f"[SUCCESS] Khoi tao Version 9 MoE Model (~7.26B Total Params) Meta Shell thanh cong! Dispatched across {num_gpus} GPUs.")
+        print(f"[SUCCESS] Khoi tao Version 9 MoE Model (~13.54B Total Params) Meta Shell thanh cong! Dispatched across {num_gpus} GPUs.")
         return model
 
     def forward(
@@ -358,7 +353,7 @@ class Cosmos3ToyModel(nn.Module):
         h = x_seq
         half_layers = len(self.blocks) // 2
         is_multi_gpu = torch.cuda.device_count() >= 2
-        total_aux_loss = 0.0
+        total_aux_loss = torch.tensor(0.0, device=device)
 
         for i, block in enumerate(self.blocks):
             if is_multi_gpu:
@@ -369,7 +364,7 @@ class Cosmos3ToyModel(nn.Module):
                         attn_mask = attn_mask.to(target_dev)
 
             h, layer_aux_loss = block(h, attn_mask=attn_mask)
-            total_aux_loss = total_aux_loss + layer_aux_loss
+            total_aux_loss = total_aux_loss + layer_aux_loss.to(total_aux_loss.device)
         
         if is_multi_gpu and h.device != torch.device("cuda:0"):
             h = h.to("cuda:0")

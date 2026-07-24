@@ -1,7 +1,7 @@
 """
 Script Train Thử Nghiệm Quy Mô Nhỏ (Pilot Training Loop)
 để kiểm tra Độ Cải Thiện (Loss Reduction Curve) của Lõi Dense Base Version 8.
-Sử dụng kỹ thuật Gradient Accumulation và FP16 Mixed Precision để không bị tràn VRAM GPU.
+Bổ sung Gradient Clipping (max_norm=1.0) và AdamW optimizer để chống nổ Gradient (NaN Loss) trong FP16.
 """
 
 import time
@@ -20,7 +20,7 @@ def train_pilot_dense_base(
     num_steps: int = 1000,
     batch_size: int = 1,
     accum_steps: int = 4,
-    lr: float = 1e-4,
+    lr: float = 1e-5,
     log_every: int = 50
 ):
     print("=" * 70)
@@ -51,10 +51,11 @@ def train_pilot_dense_base(
     total_params = sum(p.numel() for p in model.parameters())
     print(f"[INFO] Total Dense Base Parameters: {total_params / 1e9:.2f} B")
 
-    # 2. Khởi tạo DataLoader & Optimizer gọn nhẹ
+    # 2. Khởi tạo DataLoader & Optimizer AdamW chống NaN
     loader = PilotDatasetLoader(vocab_size=config.vocab_size, latent_dim=config.latent_dim, action_dim=config.action_dim)
     
-    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    # AdamW chuẩn với weight_decay=0.01
+    optimizer = optim.AdamW(model.parameters(), lr=lr, weight_decay=0.01)
     
     ar_criterion = nn.CrossEntropyLoss()
     dm_criterion = nn.MSELoss()
@@ -62,7 +63,7 @@ def train_pilot_dense_base(
     dev0 = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-    print(f"\n[INFO] Bat dau Train {num_steps} Steps (Batch Size={batch_size}, Accumulation Steps={accum_steps})...\n")
+    print(f"\n[INFO] Bat dau Train {num_steps} Steps (Batch Size={batch_size}, Accumulation Steps={accum_steps}, LR={lr})...\n")
 
     start_train_time = time.time()
     optimizer.zero_grad()
@@ -103,9 +104,13 @@ def train_pilot_dense_base(
         dm_loss = dm_criterion(dm_pred, dm_targets.float())
 
         total_loss = (ar_loss + dm_loss) / accum_steps
+        
+        # Backward pass
         total_loss.backward()
 
+        # Step optimizer và clip gradient chống nổ NaN
         if step % accum_steps == 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
             optimizer.zero_grad()
 
@@ -132,7 +137,7 @@ if __name__ == "__main__":
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--accum_steps", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=1e-5)
     parser.add_argument("--log_every", type=int, default=50)
 
     args = parser.parse_args()

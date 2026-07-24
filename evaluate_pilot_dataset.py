@@ -1,5 +1,5 @@
 """
-Script Đánh Giá Lõi Dense Base Gốc (Version 8 QK-Norm / Version 5 Base 4.03B)
+Script Đánh Giá MoE & Dense Base (Version 9 MoE / Version 8 QK-Norm / Version 5 Base)
 trên Tập Dữ Liệu Thử Nghiệm Đa Phương Tiện (Pilot Dataset Mixture)
 """
 
@@ -8,18 +8,23 @@ import argparse
 import torch
 import torch.nn as nn
 
+from mini_model.version9.model import Cosmos3ToyModel as V9Model, Cosmos3Config as V9Config
 from mini_model.version8.model import Cosmos3ToyModel as V8Model, Cosmos3Config as V8Config
 from mini_model.version5.model import Cosmos3ToyModel as V5Model, Cosmos3Config as V5Config
 from dataset_loader import PilotDatasetLoader
 
 
-def evaluate_dense_base(version: str = "version8", num_steps: int = 10, batch_size: int = 2, use_fp16: bool = True):
+def evaluate_model(version: str = "version9", num_steps: int = 10, batch_size: int = 2, use_fp16: bool = True):
     print("=" * 70)
-    print(f"BẮT ĐẦU ĐÁNH GIÁ LÕI DENSE BASE [{version.upper()}] TRÊN PILOT DATASET")
+    print(f"BẮT ĐẦU ĐÁNH GIÁ MÔ HÌNH [{version.upper()}] TRÊN PILOT DATASET")
     print("=" * 70)
 
     # 1. Chọn phiên bản mô hình
-    if version.lower() == "version8":
+    if version.lower() == "version9":
+        config = V9Config()
+        model_cls = V9Model
+        print("[INFO] Models: Version 9 (Unified Mixture-of-Experts MoE ~7.26B Total / ~4.03B Active)")
+    elif version.lower() == "version8":
         config = V8Config()
         model_cls = V8Model
         print("[INFO] Models: Version 8 (QK-Norm + LayerScale 4.03B Dense Base)")
@@ -31,7 +36,7 @@ def evaluate_dense_base(version: str = "version8", num_steps: int = 10, batch_si
     num_gpus = torch.cuda.device_count()
     print(f"[INFO] Pytorch CUDA Available: {torch.cuda.is_available()} | GPU Count: {num_gpus}")
 
-    # 2. Khởi tạo mô hình an toàn (hỗ trợ cả Meta Device Init và Standard Init)
+    # 2. Khởi tạo mô hình an toàn
     if hasattr(model_cls, "create_meta_model"):
         model = model_cls.create_meta_model(config, fp16=use_fp16)
     else:
@@ -44,7 +49,7 @@ def evaluate_dense_base(version: str = "version8", num_steps: int = 10, batch_si
     model.eval()
 
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"[INFO] Total Dense Base Parameters: {total_params / 1e6:.2f} M ({total_params / 1e9:.2f} B)")
+    print(f"[INFO] Total Model Parameters: {total_params / 1e6:.2f} M ({total_params / 1e9:.2f} B)")
 
     # 3. Khởi tạo DataLoader & Loss Criteria
     loader = PilotDatasetLoader(vocab_size=config.vocab_size, latent_dim=config.latent_dim, action_dim=config.action_dim)
@@ -61,6 +66,7 @@ def evaluate_dense_base(version: str = "version8", num_steps: int = 10, batch_si
     ar_losses = []
     dm_losses = []
     cos_sims = []
+    aux_losses = []
 
     with torch.no_grad():
         for step in range(1, num_steps + 1):
@@ -104,17 +110,21 @@ def evaluate_dense_base(version: str = "version8", num_steps: int = 10, batch_si
             ar_losses.append(ar_loss.item())
             dm_losses.append(dm_loss.item())
             cos_sims.append(cos_sim)
+            
+            aux_val = outputs.get("aux_loss", torch.tensor(0.0)).item()
+            aux_losses.append(aux_val)
 
-            print(f" Step [{step:02d}/{num_steps:02d}] | Latency: {elapsed_ms:.2f} ms | AR Loss: {ar_loss.item():.4f} | DM Loss: {dm_loss.item():.4f} | Cos Sim: {cos_sim:.4f}")
+            print(f" Step [{step:02d}/{num_steps:02d}] | Latency: {elapsed_ms:.2f} ms | AR Loss: {ar_loss.item():.4f} | DM Loss: {dm_loss.item():.4f} | Aux Loss: {aux_val:.4f} | Cos Sim: {cos_sim:.4f}")
 
     avg_latency = total_time_ms / num_steps
     avg_throughput = (batch_size * 1000.0) / avg_latency
     avg_ar_loss = sum(ar_losses) / num_steps
     avg_dm_loss = sum(dm_losses) / num_steps
     avg_cos_sim = sum(cos_sims) / num_steps
+    avg_aux_loss = sum(aux_losses) / num_steps
 
     print("\n" + "=" * 70)
-    print(" KẾT QUẢ ĐÁNH GIÁ DENSE BASE TRÊN PILOT DATASET")
+    print(" KẾT QUẢ ĐÁNH GIÁ TRÊN PILOT DATASET")
     print("=" * 70)
     print(f"  • Model Version         : {version.upper()}")
     print(f"  • Total Parameters      : {total_params / 1e9:.2f} B")
@@ -122,16 +132,17 @@ def evaluate_dense_base(version: str = "version8", num_steps: int = 10, batch_si
     print(f"  • Average Throughput    : {avg_throughput:.2f} fps")
     print(f"  • Average AR Loss       : {avg_ar_loss:.4f}")
     print(f"  • Average DM MSE Loss   : {avg_dm_loss:.4f}")
+    print(f"  • Average Aux Loss      : {avg_aux_loss:.4f}")
     print(f"  • Average Cosine Sim    : {avg_cos_sim:.4f}")
     print("=" * 70)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Evaluate Dense Base on Pilot Dataset")
-    parser.add_argument("--version", type=str, default="version8", choices=["version5", "version8"], help="Dense Base Version")
+    parser = argparse.ArgumentParser(description="Evaluate MoE & Dense Models on Pilot Dataset")
+    parser.add_argument("--version", type=str, default="version9", choices=["version5", "version8", "version9"], help="Model Version")
     parser.add_argument("--steps", type=int, default=10, help="Number of pilot evaluation steps")
     parser.add_argument("--batch_size", type=int, default=2, help="Batch size")
     parser.add_argument("--fp16", action="store_true", default=True, help="Use FP16 precision")
 
     args = parser.parse_args()
-    evaluate_dense_base(version=args.version, num_steps=args.steps, batch_size=args.batch_size, use_fp16=args.fp16)
+    evaluate_model(version=args.version, num_steps=args.steps, batch_size=args.batch_size, use_fp16=args.fp16)

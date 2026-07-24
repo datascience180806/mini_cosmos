@@ -1,7 +1,6 @@
 """
 Script Train Thử Nghiệm Quy Mô Nhỏ (Pilot Training Loop)
-để kiểm tra Độ Cải Thiện (Loss Reduction Curve) của Lõi Dense Base Version 8.
-Bổ sung PyTorch GradScaler & Safe NaN-Check để chống 100% nổ Gradient (NaN Loss) trong FP16.
+đổi mới hỗ trợ Version 9 MoE World Model Architecture (~7.26B Total Params / ~4.03B Active)
 """
 
 import time
@@ -10,13 +9,14 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
+from mini_model.version9.model import Cosmos3ToyModel as V9Model, Cosmos3Config as V9Config
 from mini_model.version8.model import Cosmos3ToyModel as V8Model, Cosmos3Config as V8Config
 from mini_model.version5.model import Cosmos3ToyModel as V5Model, Cosmos3Config as V5Config
 from dataset_loader import PilotDatasetLoader
 
 
-def train_pilot_dense_base(
-    version: str = "version8",
+def train_pilot(
+    version: str = "version9",
     num_steps: int = 1000,
     batch_size: int = 1,
     accum_steps: int = 4,
@@ -24,11 +24,15 @@ def train_pilot_dense_base(
     log_every: int = 50
 ):
     print("=" * 70)
-    print(f"BẮT ĐẦU TRAIN THỬ NGHIỆM ĐO ĐỘ CẢI THIỆN LÕI DENSE BASE [{version.upper()}] - {num_steps} STEPS")
+    print(f"BẮT ĐẦU TRAIN THỬ NGHIỆM MÔ HÌNH [{version.upper()}] - {num_steps} STEPS")
     print("=" * 70)
 
     # 1. Khởi tạo mô hình
-    if version.lower() == "version8":
+    if version.lower() == "version9":
+        config = V9Config()
+        model_cls = V9Model
+        print("[INFO] Models: Version 9 (Unified Mixture-of-Experts MoE ~7.26B Total / ~4.03B Active)")
+    elif version.lower() == "version8":
         config = V8Config()
         model_cls = V8Model
         print("[INFO] Models: Version 8 (QK-Norm + LayerScale 4.03B Dense Base)")
@@ -49,12 +53,10 @@ def train_pilot_dense_base(
     model.train()
 
     total_params = sum(p.numel() for p in model.parameters())
-    print(f"[INFO] Total Dense Base Parameters: {total_params / 1e9:.2f} B")
+    print(f"[INFO] Total Model Parameters: {total_params / 1e9:.2f} B")
 
-    # 2. Khởi tạo DataLoader, Optimizer & GradScaler
+    # 2. Khởi tạo DataLoader, Optimizer & Criteria
     loader = PilotDatasetLoader(vocab_size=config.vocab_size, latent_dim=config.latent_dim, action_dim=config.action_dim)
-    
-    # SGD với learning rate nhỏ an toàn 1e-6 cho FP16
     optimizer = optim.SGD(model.parameters(), lr=lr)
     
     ar_criterion = nn.CrossEntropyLoss()
@@ -70,6 +72,7 @@ def train_pilot_dense_base(
 
     running_ar_loss = 0.0
     running_dm_loss = 0.0
+    running_aux_loss = 0.0
     valid_steps = 0
 
     for step in range(1, num_steps + 1):
@@ -87,7 +90,6 @@ def train_pilot_dense_base(
         dm_latent = batch["dm_latent"]
         action_vectors = batch["action_vectors"]
 
-        # Giả lập nhãn học thật
         ar_targets = torch.randint(0, config.vocab_size, ar_tokens.shape, device=dev0)
         dm_targets = torch.randn_like(dm_latent)
 
@@ -103,8 +105,9 @@ def train_pilot_dense_base(
 
         ar_loss = ar_criterion(ar_logits.view(-1, config.vocab_size), ar_targets.view(-1))
         dm_loss = dm_criterion(dm_pred, dm_targets.float())
+        aux_loss = outputs.get("aux_loss", torch.tensor(0.0, device=dev0)).float()
 
-        total_loss = (ar_loss + dm_loss) / accum_steps
+        total_loss = (ar_loss + dm_loss + aux_loss) / accum_steps
         
         # Backward pass
         total_loss.backward()
@@ -124,10 +127,10 @@ def train_pilot_dense_base(
 
             optimizer.zero_grad()
 
-        # Bỏ qua cộng dồn nếu gặp NaN
         if not (torch.isnan(ar_loss) or torch.isnan(dm_loss)):
             running_ar_loss += ar_loss.item() * accum_steps
             running_dm_loss += dm_loss.item() * accum_steps
+            running_aux_loss += aux_loss.item() * accum_steps
             valid_steps += 1
 
         if step == 1 or step % log_every == 0 or step == num_steps:
@@ -135,9 +138,11 @@ def train_pilot_dense_base(
             divisor = max(1, valid_steps)
             avg_step_ar = running_ar_loss / divisor
             avg_step_dm = running_dm_loss / divisor
-            print(f" Train Step [{step:04d}/{num_steps:04d}] | Step Time: {elapsed_ms:.2f} ms | AR Loss: {avg_step_ar:.4f} | DM Loss: {avg_step_dm:.4f} | Total Loss: {(avg_step_ar + avg_step_dm):.4f}")
+            avg_step_aux = running_aux_loss / divisor
+            print(f" Train Step [{step:04d}/{num_steps:04d}] | Step Time: {elapsed_ms:.2f} ms | AR Loss: {avg_step_ar:.4f} | DM Loss: {avg_step_dm:.4f} | Aux Loss: {avg_step_aux:.4f} | Total Loss: {(avg_step_ar + avg_step_dm + avg_step_aux):.4f}")
             running_ar_loss = 0.0
             running_dm_loss = 0.0
+            running_aux_loss = 0.0
             valid_steps = 0
 
     total_elapsed = time.time() - start_train_time
@@ -147,8 +152,8 @@ def train_pilot_dense_base(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Train Pilot Steps on Dense Base")
-    parser.add_argument("--version", type=str, default="version8", choices=["version5", "version8"])
+    parser = argparse.ArgumentParser(description="Train Pilot Steps on MoE & Dense Models")
+    parser.add_argument("--version", type=str, default="version9", choices=["version5", "version8", "version9"])
     parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--accum_steps", type=int, default=4)
@@ -156,7 +161,7 @@ if __name__ == "__main__":
     parser.add_argument("--log_every", type=int, default=50)
 
     args = parser.parse_args()
-    train_pilot_dense_base(
+    train_pilot(
         version=args.version,
         num_steps=args.steps,
         batch_size=args.batch_size,

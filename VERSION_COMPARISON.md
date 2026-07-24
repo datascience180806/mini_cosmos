@@ -7,6 +7,12 @@
 
 ## 1. Bảng So Sánh Tổng Quan (Benchmark Matrix)
 
+> [!IMPORTANT]
+> **LƯU Ý QUAN TRỌNG VỀ MỤC ĐÍCH ĐÁNH GIÁ (PRE-TRAINING HARDWARE BENCHMARK):**  
+> - Các phiên bản trong báo cáo này được đánh giá dựa trên **khung xương kiến trúc chưa qua huấn luyện (Untrained Architecture Shells)** thông qua bộ đo đạc tự động `benchmark.py`.  
+> - **Mục đích:** Nhằm kiểm tra khả năng quản lý bộ nhớ GPU VRAM, độ trễ suy luận (Forward Latency), thông lượng (Throughput fps), và xác minh tính đúng đắn của màng chắn chú ý cách ly (`Attention Mask Isolation`) trên phần cứng thực tế (NVIDIA T4 GPUs).  
+> - **Lưu ý:** Bảng chỉ số này **KHÔNG PHẢI là chỉ số độ chính xác hay chất lượng sinh ảnh/video của mô hình sau khi đã được huấn luyện xong (Post-training Quality Metrics)**.
+
 ### 💡 Cơ Chế Đánh Giá Các Phiên Bản
 Bộ đo lường tự động (`benchmark.py`) kiểm tra mô hình dựa trên **4 nhóm chỉ số kỹ thuật tiêu chuẩn**:
 
@@ -352,6 +358,7 @@ flowchart TD
 # Cập nhật repo từ GitHub
 !git pull
 
-# Chạy benchmark cho Version 0 (Cosmos 3 Nano Meta Shell 7.24B) trên Dual GPU T4
-!python benchmark.py --version version0 --batch_size 2 --num_runs 50 --fp16 --multi_gpu
+# Chạy benchmark so sánh Version 5 (Base 4B) và Version 8 (QK-Norm 4B)
+!python benchmark.py --version version5 --batch_size 2 --num_runs 50 --fp16
+!python benchmark.py --version version8 --batch_size 2 --num_runs 50 --fp16
 ```

@@ -83,11 +83,12 @@ Dựa trên bảng chỉ số thực nghiệm chi tiết từ **Version 0 đến
 
 ### 3.1. Version 0 (`NVIDIA/Cosmos3-Nano`) - Sơ Đồ Kiến Trúc Chuẩn NVIDIA Gốc (~7.24B Dense Backbone)
 - **Mô tả kiến trúc:** Khung xương kiến trúc lõi 100% chuẩn NVIDIA Cosmos 3 Nano (7.24B Dense Backbone). Sử dụng `Meta Device Init` khởi tạo 0 MB CPU RAM và nạp phân bổ song song qua 2 Card GPU T4 (`cuda:0` và `cuda:1`).
-- **Chỉ số đo thực tế trên Dual T4 GPUs:**
-  - Total Parameters: **7,244.92 M (~7.24B)**
-  - Peak VRAM: **7,632.69 MB (~7.63 GB / GPU)** (chỉ chiếm ~52% VRAM mỗi card).
-  - Latency: **90.53 ms**
-  - Throughput: **22.09 fps** (tăng vọt gấp 1.9 lần so với Version 6 chạy 1 GPU).
+- **Ghi chú về Đánh giá Dense Backbone & Kiến trúc MoE:**
+  - **Đánh giá Lõi Dense Base (7.24B):** Thử nghiệm tập trung đo đạc sức chứa và tốc độ của Lõi Trung Tâm Dense Backbone (7.24B Active Params) — thành phần chịu trách nhiệm tính toán chính trực tiếp cho mọi lượt forward pass.
+  - **Lượng tham số còn lại (~8.76B) dành cho làm gì?** Khoảng ~8.76 Tỷ tham số còn lại của mô hình 16B gốc được dành riêng cho các **Tầng Chuyên Gia (MoE Expert Layers ~7B)** và các **Bộ Mã Hóa Đa Phương Tiện (Omnimodal Adapters ~1.7B)**.
+  - **Vì sao không đánh giá toàn bộ kiến trúc MoE ở giai đoạn này?**
+    1. Khi chưa qua huấn luyện (Pre-training), Mạng Điều Phối (Router Network) khởi tạo ngẫu nhiên sẽ phân bổ token không đều giữa các Chuyên gia, gây ra hiện tượng nghẽn tải giả lập giữa 2 GPU (GPU Load Imbalance).
+    2. Việc nạp toàn bộ 16B (bao gồm cả các Chuyên gia chưa dùng tới) vào VRAM sẽ làm sai lệch chỉ số hiệu năng thực tế của thuật toán MoE (vốn được thiết kế để chỉ tính toán đúng 7.24B Active Params khi vận hành).
 
 ```mermaid
 flowchart TD

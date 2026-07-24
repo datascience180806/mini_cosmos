@@ -1,0 +1,316 @@
+import math
+from dataclasses import dataclass
+from typing import Optional, Dict, Tuple, Any
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+
+@dataclass
+class Cosmos3Config:
+    """
+    Cấu hình thông số kiến trúc chuẩn NVIDIA Cosmos 3 Nano (Baseline 8B Dense / 16B Total)
+    - hidden_dim: 4096
+    - num_layers: 32 layers
+    - num_heads: 32 (num_kv_heads=8, GQA 4:1)
+    - vocab_size: 32000
+    - latent_dim: 256
+    """
+    hidden_dim: int = 4096           # Dim không gian nhúng
+    num_heads: int = 32              # 32 Query Attention Heads
+    num_kv_heads: int = 8            # 8 Key/Value Attention Heads (GQA 4:1)
+    num_layers: int = 32             # 32 Transformer Blocks (Quy mô Cosmos 3 Nano Baseline 8B Dense)
+    mlp_ratio: float = 3.5           # SwiGLU intermediate dim = 14336
+    dropout: float = 0.1
+    
+    # Kích thước từ vựng & Latent các modality mở rộng
+    vocab_size: int = 32000          # Từ vựng rời rạc mở rộng
+    latent_dim: int = 256            # Không gian nén VAE độ phân giải cao
+    audio_dim: int = 256             # Đặc trưng âm thanh
+    action_dim: int = 7              # Véc-tơ hành động (6-DoF + gripper)
+
+
+class RMSNorm(nn.Module):
+    """RMSNorm đơn giản và hiệu năng cao."""
+    def __init__(self, dim: int, eps: float = 1e-6):
+        super().__init__()
+        self.eps = eps
+        self.weight = nn.Parameter(torch.ones(dim))
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        variance = x.pow(2).mean(-1, keepdim=True)
+        return x * torch.rsqrt(variance + self.eps) * self.weight
+
+
+class RotaryPositionEmbedding(nn.Module):
+    """Rotary Position Embedding (RoPE) cho Q và K."""
+    def __init__(self, dim: int, max_seq_len: int = 4096, base: int = 10000):
+        super().__init__()
+        self.dim = dim
+        inv_freq = 1.0 / (base ** (torch.arange(0, dim, 2).float() / dim))
+        self.register_buffer("inv_freq", inv_freq, persistent=False)
+
+        t = torch.arange(max_seq_len, dtype=torch.float32)
+        freqs = torch.outer(t, self.inv_freq)
+        emb = torch.cat((freqs, freqs), dim=-1)
+        self.register_buffer("cos_cached", emb.cos(), persistent=False)
+        self.register_buffer("sin_cached", emb.sin(), persistent=False)
+
+    def _rotate_half(self, x: torch.Tensor) -> torch.Tensor:
+        x1 = x[..., : x.shape[-1] // 2]
+        x2 = x[..., x.shape[-1] // 2 :]
+        return torch.cat((-x2, x1), dim=-1)
+
+    def forward(self, q: torch.Tensor, k: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        seq_len = q.shape[2]
+        cos = self.cos_cached[:seq_len, :].to(q.dtype).unsqueeze(0).unsqueeze(0)
+        sin = self.sin_cached[:seq_len, :].to(q.dtype).unsqueeze(0).unsqueeze(0)
+        
+        q_embed = (q * cos) + (self._rotate_half(q) * sin)
+        k_embed = (k * cos) + (self._rotate_half(k) * sin)
+        return q_embed, k_embed
+
+
+class Cosmos3AttentionMask(nn.Module):
+    """Ma trận Phân luồng Chú ý (Attention Mask Matrix)."""
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, seq_len_ar: int, seq_len_dm: int, device: torch.device) -> torch.Tensor:
+        total_len = seq_len_ar + seq_len_dm
+        mask = torch.full((total_len, total_len), float("-inf"), device=device)
+
+        # Q_AR x K_AR: Causal Mask
+        causal_mask = torch.triu(torch.full((seq_len_ar, seq_len_ar), float("-inf"), device=device), diagonal=1)
+        mask[:seq_len_ar, :seq_len_ar] = causal_mask
+
+        # Q_DM x [K_AR, K_DM]: Full Attention
+        mask[seq_len_ar:, :] = 0.0
+
+        return mask
+
+
+class GroupedQueryMultimodalAttention(nn.Module):
+    """
+    Shared Multimodal Attention với GQA & RoPE cho quy mô Cosmos 3 Nano Baseline.
+    """
+    def __init__(self, config: Cosmos3Config):
+        super().__init__()
+        self.config = config
+        self.num_heads = config.num_heads
+        self.num_kv_heads = config.num_kv_heads
+        self.num_queries_per_kv = config.num_heads // config.num_kv_heads
+        self.head_dim = config.hidden_dim // config.num_heads
+
+        self.q_proj = nn.Linear(config.hidden_dim, config.num_heads * self.head_dim, bias=False)
+        self.k_proj = nn.Linear(config.hidden_dim, config.num_kv_heads * self.head_dim, bias=False)
+        self.v_proj = nn.Linear(config.hidden_dim, config.num_kv_heads * self.head_dim, bias=False)
+        self.out_proj = nn.Linear(config.num_heads * self.head_dim, config.hidden_dim, bias=False)
+        
+        self.rope = RotaryPositionEmbedding(self.head_dim)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        batch_size, seq_len, _ = x.shape
+
+        q = self.q_proj(x).view(batch_size, seq_len, self.num_heads, self.head_dim).transpose(1, 2)
+        k = self.k_proj(x).view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+        v = self.v_proj(x).view(batch_size, seq_len, self.num_kv_heads, self.head_dim).transpose(1, 2)
+
+        q, k = self.rope(q, k)
+
+        if self.num_queries_per_kv > 1:
+            k = k.repeat_interleave(self.num_queries_per_kv, dim=1)
+            v = v.repeat_interleave(self.num_queries_per_kv, dim=1)
+
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+
+        if attn_mask is not None:
+            scores = scores + attn_mask.unsqueeze(0).unsqueeze(0).to(scores.dtype)
+
+        attn_weights = F.softmax(scores, dim=-1)
+        attn_weights = self.dropout(attn_weights)
+
+        context = torch.matmul(attn_weights, v)
+        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.config.hidden_dim)
+
+        return self.out_proj(context)
+
+
+class SwiGLUMLP(nn.Module):
+    """Feed-Forward SwiGLU."""
+    def __init__(self, config: Cosmos3Config):
+        super().__init__()
+        intermediate_dim = int(config.hidden_dim * config.mlp_ratio)
+        self.w1 = nn.Linear(config.hidden_dim, intermediate_dim, bias=False)
+        self.w2 = nn.Linear(intermediate_dim, config.hidden_dim, bias=False)
+        self.w3 = nn.Linear(config.hidden_dim, intermediate_dim, bias=False)
+        self.dropout = nn.Dropout(config.dropout)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.dropout(self.w2(F.silu(self.w1(x)) * self.w3(x)))
+
+
+class Cosmos3Block(nn.Module):
+    """Khối Transformer Version 0 quy mô Cosmos 3 Nano Baseline."""
+    def __init__(self, config: Cosmos3Config):
+        super().__init__()
+        self.norm1 = RMSNorm(config.hidden_dim)
+        self.attn = GroupedQueryMultimodalAttention(config)
+        self.norm2 = RMSNorm(config.hidden_dim)
+        self.mlp = SwiGLUMLP(config)
+
+    def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        x = x + self.attn(self.norm1(x), attn_mask=attn_mask)
+        x = x + self.mlp(self.norm2(x))
+        return x
+
+
+class Cosmos3ToyModel(nn.Module):
+    """
+    Mô hình Cosmos 3 Version 0 (Baseline Cosmos 3 Nano Architecture Shell):
+    - Cấu trúc khung xương kiến trúc 100% chuẩn NVIDIA Cosmos 3 Nano (7.24B Dense).
+    - Hỗ trợ khởi tạo Meta Device Init (0 MB CPU RAM) cấp phát trực tiếp VRAM.
+    """
+    def __init__(self, config: Cosmos3Config):
+        super().__init__()
+        self.config = config
+        
+        self.ar_embedding = nn.Embedding(config.vocab_size, config.hidden_dim)
+        self.dm_vision_proj = nn.Linear(config.latent_dim, config.hidden_dim)
+        self.audio_proj = nn.Linear(config.audio_dim, config.hidden_dim)
+        self.action_proj = nn.Linear(config.action_dim, config.hidden_dim)
+
+        self.mask_generator = Cosmos3AttentionMask()
+        self.blocks = nn.ModuleList([Cosmos3Block(config) for _ in range(config.num_layers)])
+        self.norm_f = RMSNorm(config.hidden_dim)
+
+        self.ar_head = nn.Linear(config.hidden_dim, config.vocab_size, bias=False)
+        self.dm_vision_head = nn.Linear(config.hidden_dim, config.latent_dim)
+
+    @classmethod
+    def create_meta_model(cls, config: Cosmos3Config, fp16: bool = True):
+        """
+        Tạo khung xương kiến trúc Version 0 trên 'meta' device (0 MB System RAM), sau đó allocate trực tiếp trên GPU.
+        """
+        num_gpus = torch.cuda.device_count()
+        dev0 = torch.device("cuda:0") if num_gpus > 0 else torch.device("cpu")
+        dev1 = torch.device("cuda:1") if num_gpus > 1 else dev0
+
+        if fp16:
+            torch.set_default_dtype(torch.float16)
+
+        with torch.device("meta"):
+            model = cls(config)
+
+        torch.set_default_dtype(torch.float32)
+
+        half = len(model.blocks) // 2
+
+        model.ar_embedding = model.ar_embedding.to_empty(device=dev0)
+        model.dm_vision_proj = model.dm_vision_proj.to_empty(device=dev0)
+        model.audio_proj = model.audio_proj.to_empty(device=dev0)
+        model.action_proj = model.action_proj.to_empty(device=dev0)
+
+        for idx, block in enumerate(model.blocks):
+            target_dev = dev0 if (idx < half or num_gpus < 2) else dev1
+            block.to_empty(device=target_dev)
+
+        model.norm_f = model.norm_f.to_empty(device=dev0)
+        model.ar_head = model.ar_head.to_empty(device=dev0)
+        model.dm_vision_head = model.dm_vision_head.to_empty(device=dev0)
+
+        def _init_weights(m):
+            if isinstance(m, nn.Linear):
+                nn.init.normal_(m.weight, std=0.02)
+            elif isinstance(m, nn.Embedding):
+                nn.init.normal_(m.weight, std=0.02)
+            elif isinstance(m, RMSNorm):
+                nn.init.ones_(m.weight)
+
+        with torch.no_grad():
+            model.apply(_init_weights)
+
+        print(f"[SUCCESS] Khoi tao Version 0 Cosmos 3 Nano Meta Shell (~7.24B Params) thanh cong! Dispatched across {num_gpus} GPUs.")
+        return model
+
+    def forward(
+        self,
+        ar_tokens: torch.Tensor,
+        dm_latent: Optional[torch.Tensor] = None,
+        audio_features: Optional[torch.Tensor] = None,
+        action_vectors: Optional[torch.Tensor] = None,
+        mode: str = "both"
+    ) -> Dict[str, torch.Tensor]:
+        
+        device = ar_tokens.device
+        batch_size, seq_len_ar = ar_tokens.shape
+
+        x_ar = self.ar_embedding(ar_tokens)
+        
+        dm_embeds = []
+        seq_len_dm = 0
+
+        if dm_latent is not None:
+            x_dm_vis = self.dm_vision_proj(dm_latent)
+            dm_embeds.append(x_dm_vis)
+            seq_len_dm += x_dm_vis.shape[1]
+
+        if audio_features is not None:
+            x_audio = self.audio_proj(audio_features)
+            dm_embeds.append(x_audio)
+            seq_len_dm += x_audio.shape[1]
+
+        if action_vectors is not None:
+            x_action = self.action_proj(action_vectors)
+            dm_embeds.append(x_action)
+            seq_len_dm += x_action.shape[1]
+
+        if len(dm_embeds) > 0:
+            x_dm = torch.cat(dm_embeds, dim=1)
+            x_seq = torch.cat([x_ar, x_dm], dim=1)
+        else:
+            x_seq = x_ar
+
+        if seq_len_dm > 0:
+            attn_mask = self.mask_generator(seq_len_ar, seq_len_dm, device=device)
+        else:
+            attn_mask = torch.triu(torch.full((seq_len_ar, seq_len_ar), float("-inf"), device=device), diagonal=1)
+
+        h = x_seq
+        half_layers = len(self.blocks) // 2
+        is_multi_gpu = torch.cuda.device_count() >= 2
+
+        for i, block in enumerate(self.blocks):
+            if is_multi_gpu:
+                target_dev = torch.device("cuda:0") if i < half_layers else torch.device("cuda:1")
+                if h.device != target_dev:
+                    h = h.to(target_dev)
+                    if attn_mask is not None:
+                        attn_mask = attn_mask.to(target_dev)
+
+            h = block(h, attn_mask=attn_mask)
+        
+        if is_multi_gpu and h.device != torch.device("cuda:0"):
+            h = h.to("cuda:0")
+
+        outputs = {}
+
+        if mode in ["reasoner", "both"]:
+            h_ar = h[:, :seq_len_ar, :]
+            outputs["ar_logits"] = self.ar_head(h_ar)
+
+        if mode in ["generator", "both"] and seq_len_dm > 0:
+            h_dm = h[:, seq_len_ar:, :]
+            outputs["dm_predicted_latent"] = self.dm_vision_head(h_dm[:, :dm_latent.shape[1], :])
+
+        return outputs
+
+
+if __name__ == "__main__":
+    config = Cosmos3Config()
+    model = Cosmos3ToyModel.create_meta_model(config)
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"[SUCCESS] Khoi tao Cosmos 3 Version 0 Nano Model (~7.24B Params) thanh cong!")
+    print(f"-> Tong so luong tham so (Total Parameters): {total_params / 1e6:.2f}M ({total_params / 1e9:.2f}B)")

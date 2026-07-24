@@ -31,28 +31,28 @@ Bộ đo lường tự động (`benchmark.py`) kiểm tra mô hình dựa trên
 
 | Thông Số Đánh Giá | Version 0 (Cosmos 3 Baseline) | Version 1 (Mini PoC) | Version 2 (Scaled LLM) | Version 3 (GQA + RoPE) | Version 4 (1.34B Scale) | Version 5 (4.03B Base FP16) | Version 6 (7.24B Single GPU) | Version 7 (8.12B Dual GPU) | Version 8 (4.03B QK-Norm + LayerScale) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **Total Parameters** | **16 B (8B Dense)** | **20.49 M** | **127.99 M** | **140.57 M** | **1,342.30 M** | **4,026.76 M** | **7,244.92 M (7.24B)** | **8,117.37 M (8.12B)** | **4,026.76 M (4.03B)** |
-| **Number of GPUs** | Datacenter | 1x GPU | 1x GPU | 1x GPU | 1x GPU | 1x GPU T4 | **1x GPU T4 (Max 98.2%)** | **2x GPU T4 (Dual GPU)** | **1x GPU T4** |
+| **Total Parameters** | **16 B (8B Dense)** | **20.49 M** | **127.99 M** | **140.57 M** | **1,342.30 M** | **4,026.76 M** | **7,244.92 M (7.24B)** | **8,117.37 M (8.12B)** | **4,026.97 M (4.03B)** |
+| **Number of GPUs** | Datacenter | 1x GPU | 1x GPU | 1x GPU | 1x GPU | 2x GPU T4 | **1x GPU T4 (Max 98.2%)** | **2x GPU T4 (Dual GPU)** | **2x GPU T4** |
 | **Precision** | FP8 / BF16 | FP32 | FP32 | FP32 | FP32 | **FP16** | **FP16** | **FP16 (Meta Device Init)** | **FP16** |
-| **Peak VRAM Usage** | **~18,000 MB** | **139.78 MB** | **702.38 MB** | **810.40 MB** | **6,424.15 MB** | **8,443.60 MB** | **14,306.24 MB (14.31GB)** | **8,521.79 MB (8.52GB)** | TBD *(Đo trên Kaggle)* |
-| **Forward Latency (ms)** | N/A | **5.27 ms** | **20.44 ms** | **23.09 ms** | **208.90 ms** | **69.62 ms** | **86.58 ms** | **102.22 ms** | TBD *(Đo trên Kaggle)* |
-| **Throughput (fps)** | N/A | **758.70 fps** | **195.74 fps** | **173.24 fps** | **19.15 fps** | **28.73 fps** | **11.55 fps** | **19.57 fps** | TBD *(Đo trên Kaggle)* |
-| **AR Loss** | N/A | `7.1093` | `7.7275` | `7.7695` | `9.0605` | `9.9545` | `10.4755` | `82.4236` | TBD |
-| **DM MSE Loss** | N/A | `1.2332` | `1.3119` | `1.4106` | `1.3204` | `1.3345` | `1.3359` | `399.7594` | TBD |
+| **Peak VRAM Usage** | **~18,000 MB** | **139.78 MB** | **702.38 MB** | **810.40 MB** | **6,424.15 MB** | **8,443.60 MB** | **14,306.24 MB (14.31GB)** | **8,521.79 MB (8.52GB)** | **8,552.24 MB (8.55GB)** |
+| **Forward Latency (ms)** | N/A | **5.27 ms** | **20.44 ms** | **23.09 ms** | **208.90 ms** | **69.68 ms** | **86.58 ms** | **102.22 ms** | **72.63 ms** |
+| **Throughput (fps)** | N/A | **758.70 fps** | **195.74 fps** | **173.24 fps** | **19.15 fps** | **28.70 fps** | **11.55 fps** | **19.57 fps** | **27.54 fps** |
+| **AR Loss** | N/A | `7.1093` | `7.7275` | `7.7695` | `9.0605` | `9.8197` | `10.4755` | `82.4236` | `9.8409` |
+| **DM MSE Loss** | N/A | `1.2332` | `1.3119` | `1.4106` | `1.3204` | `1.3329` | `1.3359` | `399.7594` | **`1.3032` [CẢI THIỆN]** |
 | **Attention Mask Isolation** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** | **PASSED [OK]** |
 
 ---
 
 ## 2. Kết Luận & Bài Học Rút Ra Từ Bảng Thực Nghiệm (Key Insights & Conclusions)
 
-Dựa trên bảng chỉ số thực nghiệm chi tiết từ **Version 1 đến Version 7**, dự án rút ra **5 kết luận kỹ thuật quan trọng**:
+Dựa trên bảng chỉ số thực nghiệm chi tiết từ **Version 1 đến Version 8**, dự án rút ra **5 kết luận kỹ thuật quan trọng**:
 
 ### 1. Đánh Đổi Giữa Quy Mô & Tốc Độ Suy Luận (Scaling Trade-off)
 - **Hiện tượng:** Khi số lượng tham số mở rộng từ **20M** lên **8.12B** (gấp ~400 lần), độ trễ suy luận (`Forward Latency`) tăng từ **5.27 ms** lên **102.22 ms** và thông lượng (`Throughput`) giảm từ **758.70 fps** xuống **19.57 fps**.
-- **Bài học ứng dụng:** Các ứng dụng chạy thời gian thực tại chỗ (Robot di động AMR/Xe tự hành cần độ trễ dưới $30\text{ ms}$) nên sử dụng mô hình tối ưu quy mô như **Version 3 (140M)** hoặc **Version 5 (4.03B)**. Đối với bài toán mô phỏng nhà máy trên Server trung tâm, mô hình **Version 7 (8.12B)** là lựa chọn phù hợp nhất.
+- **Bài học ứng dụng:** Các ứng dụng chạy thời gian thực tại chỗ (Robot di động AMR/Xe tự hành cần độ trễ dưới $30\text{ ms}$) nên sử dụng mô hình tối ưu quy mô như **Version 3 (140M)** hoặc **Version 5 / Version 8 (4.03B)**. Đối với bài toán mô phỏng nhà máy trên Server trung tâm, mô hình **Version 7 (8.12B)** là lựa chọn phù hợp nhất.
 
 ### 2. Ưu Thế Vượt Trội Của Định Dạng FP16 Half Precision
-- **Hiện tượng:** So sánh giữa **Version 4 (1.34B - FP32)** tốn **6.42 GB VRAM** (đạt 19.15 fps) và **Version 5 (4.03B - FP16)** tốn **8.44 GB VRAM** (đạt **28.73 fps**).
+- **Hiện tượng:** So sánh giữa **Version 4 (1.34B - FP32)** tốn **6.42 GB VRAM** (đạt 19.15 fps) và **Version 5 (4.03B - FP16)** tốn **8.44 GB VRAM** (đạt **28.70 fps**).
 - **Bài học ứng dụng:** Định dạng FP16 nén nhẹ 50% kích thước dữ liệu bộ nhớ, giúp mô hình tăng gấp 3 lần tham số nhưng dung lượng VRAM chỉ tăng nhẹ và thông lượng tính toán trên nhân CUDA Cores tăng vọt 1.5 lần.
 
 ### 3. Ngưỡng Giới Hạn Phần Cứng Của 1 Card GPU T4 (Single-GPU VRAM Wall)
@@ -65,9 +65,9 @@ Dựa trên bảng chỉ số thực nghiệm chi tiết từ **Version 1 đến
   - Tốc độ thông lượng **tăng vọt 1.7 lần** (từ **11.55 fps lên 19.57 fps**), mặc dù số tham số lớn hơn (8.12B).
 - **Bài học ứng dụng:** Kỹ thuật `Device Pipeline Parallelism` phân chia tầng lớp kết hợp `Meta Device Init` (khởi tạo 0 MB CPU RAM) là giải pháp tối ưu để chạy các siêu mô hình vượt mốc 8 Tỷ tham số trên hạ tầng phần cứng giới hạn.
 
-### 5. Sự Ổn Định Tuyệt Đối Của Attention Mask Isolation
-- **Hiện tượng:** Tất cả các phiên bản (từ V1 đến V7) đều đạt chỉ số `attention_mask_isolation_verified` = **PASSED [OK] 100%**.
-- **Bài học ứng dụng:** Khẳng định nguyên lý màng chắn chú ý cách ly ($Q_{AR} \times K_{DM} = -\infty$) của NVIDIA Cosmos 3 hoạt động ổn định 100%: **Nhiễu ngẫu nhiên từ quá trình sinh video (Diffusion) tuyệt đối không rò rỉ làm ảnh hưởng đến quyết định suy luận chữ (Autoregressive)** ở bất kỳ quy mô tham số nào.
+### 5. Sự Ổn Định Tuyệt Đối Của Attention Mask Isolation & Cải Tiến Từ Version 8
+- **Hiện tượng:** Tất cả các phiên bản (từ V1 đến V8) đều đạt chỉ số `attention_mask_isolation_verified` = **PASSED [OK] 100%**.
+- **Kết quả Version 8:** Ở mốc 4B, kiến trúc Version 8 (QK-Norm + LayerScale) cải thiện sai số sinh ảnh (`DM MSE Loss` giảm từ `1.3329` xuống `1.3032`) mà chỉ tốn thêm **2.95 ms** độ trễ, vẫn duy trì tốc độ rất cao **27.54 fps**.
 
 ---
 

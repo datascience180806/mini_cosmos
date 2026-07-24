@@ -15,9 +15,16 @@ from mini_model.version5.model import Cosmos3ToyModel as V5Model, Cosmos3Config 
 from dataset_loader import PilotDatasetLoader
 
 
-def train_pilot_dense_base(version: str = "version8", num_steps: int = 50, batch_size: int = 1, accum_steps: int = 4, lr: float = 1e-4):
+def train_pilot_dense_base(
+    version: str = "version8",
+    num_steps: int = 1000,
+    batch_size: int = 1,
+    accum_steps: int = 4,
+    lr: float = 1e-4,
+    log_every: int = 50
+):
     print("=" * 70)
-    print(f"BẮT ĐẦU TRAIN THỬ NGHIỆM ĐO ĐỘ CẢI THIỆN LÕI DENSE BASE [{version.upper()}]")
+    print(f"BẮT ĐẦU TRAIN THỬ NGHIỆM ĐO ĐỘ CẢI THIỆN LÕI DENSE BASE [{version.upper()}] - {num_steps} STEPS")
     print("=" * 70)
 
     # 1. Khởi tạo mô hình
@@ -47,7 +54,6 @@ def train_pilot_dense_base(version: str = "version8", num_steps: int = 50, batch
     # 2. Khởi tạo DataLoader & Optimizer gọn nhẹ
     loader = PilotDatasetLoader(vocab_size=config.vocab_size, latent_dim=config.latent_dim, action_dim=config.action_dim)
     
-    # Sử dụng SGD hoặc AdamW gọn nhẹ với bfloat16/fp16
     optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9)
     
     ar_criterion = nn.CrossEntropyLoss()
@@ -60,6 +66,9 @@ def train_pilot_dense_base(version: str = "version8", num_steps: int = 50, batch
 
     start_train_time = time.time()
     optimizer.zero_grad()
+
+    running_ar_loss = 0.0
+    running_dm_loss = 0.0
 
     for step in range(1, num_steps + 1):
         step_start = time.time()
@@ -100,22 +109,31 @@ def train_pilot_dense_base(version: str = "version8", num_steps: int = 50, batch
             optimizer.step()
             optimizer.zero_grad()
 
-        elapsed_ms = (time.time() - step_start) * 1000
-        print(f" Train Step [{step:03d}/{num_steps:03d}] | Step Time: {elapsed_ms:.2f} ms | AR Loss: {ar_loss.item():.4f} | DM Loss: {dm_loss.item():.4f} | Total Loss: {(ar_loss + dm_loss).item():.4f}")
+        running_ar_loss += ar_loss.item()
+        running_dm_loss += dm_loss.item()
+
+        if step == 1 or step % log_every == 0 or step == num_steps:
+            elapsed_ms = (time.time() - step_start) * 1000
+            avg_step_ar = running_ar_loss / (log_every if step > 1 else 1)
+            avg_step_dm = running_dm_loss / (log_every if step > 1 else 1)
+            print(f" Train Step [{step:04d}/{num_steps:04d}] | Step Time: {elapsed_ms:.2f} ms | AR Loss: {avg_step_ar:.4f} | DM Loss: {avg_step_dm:.4f} | Total Loss: {(avg_step_ar + avg_step_dm):.4f}")
+            running_ar_loss = 0.0
+            running_dm_loss = 0.0
 
     total_elapsed = time.time() - start_train_time
     print("\n" + "=" * 70)
-    print(f" HOÀN THÀNH TRAIN THỬ NGHIỆM [{version.upper()}] TRONG {total_elapsed:.2f} GIÂY")
+    print(f" HOÀN THÀNH TRAIN THỬ NGHIỆM [{version.upper()}] {num_steps} STEPS TRONG {total_elapsed:.2f} GIÂY ({total_elapsed/60:.2f} PHÚT)")
     print("=" * 70)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Pilot Steps on Dense Base")
     parser.add_argument("--version", type=str, default="version8", choices=["version5", "version8"])
-    parser.add_argument("--steps", type=int, default=50)
+    parser.add_argument("--steps", type=int, default=1000)
     parser.add_argument("--batch_size", type=int, default=1)
     parser.add_argument("--accum_steps", type=int, default=4)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--log_every", type=int, default=50)
 
     args = parser.parse_args()
     train_pilot_dense_base(
@@ -123,5 +141,6 @@ if __name__ == "__main__":
         num_steps=args.steps,
         batch_size=args.batch_size,
         accum_steps=args.accum_steps,
-        lr=args.lr
+        lr=args.lr,
+        log_every=args.log_every
     )

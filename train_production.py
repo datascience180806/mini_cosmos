@@ -2,11 +2,12 @@
 Production Fine-Tuning & Training Pipeline for Cosmos 3 MoE World Model (Version 9 / Version 8)
 - Đích nhắm: Huấn luyện thực tế (5,000 - 20,000 steps) cho bài toán sản xuất nhà máy / AI công nghiệp.
 - Tính năng chống Tràn Ổ Đĩa Kaggle Disk Full:
-  1. Tự động ghi đè/xóa file checkpoint cũ, chỉ duy trì 1 file 'cosmos3_{version}_latest.pt' mới nhất (~7.2GB).
-  2. Nạp và xử lý luồng dữ liệu đa phương tiện từ Hugging Face qua dataset_loader.py.
-  3. Khả năng Resume Fine-Tuning từ Checkpoint đã lưu.
-  4. Lịch điều chỉnh Learning Rate: Cosine Annealing Scheduler kết hợp Warmup.
-  5. Kỹ thuật Tích lũy Gradient (Gradient Accumulation) và Cắt Gradient (Gradient Clipping) chống tràn VRAM.
+  1. Dọn dẹp các file checkpoint cũ rác ở đầu phiên chạy.
+  2. Tự động ghi đè/xóa file checkpoint cũ, chỉ duy trì 1 file 'cosmos3_{version}_latest.pt' mới nhất (~7.2GB).
+  3. Nạp và xử lý luồng dữ liệu đa phương tiện từ Hugging Face qua dataset_loader.py.
+  4. Khả năng Resume Fine-Tuning từ Checkpoint đã lưu.
+  5. Lịch điều chỉnh Learning Rate: Cosine Annealing Scheduler kết hợp Warmup.
+  6. Kỹ thuật Tích lũy Gradient (Gradient Accumulation) và Cắt Gradient (Gradient Clipping) chống tràn VRAM.
 """
 
 import os
@@ -52,6 +53,15 @@ def run_production_training(
     print("=" * 80)
 
     os.makedirs(checkpoint_dir, exist_ok=True)
+
+    # Dọn dẹp các file checkpoint bị lỗi dở dang trên Kaggle nếu không có lệnh Resume
+    if not resume_from:
+        initial_old_files = glob.glob(os.path.join(checkpoint_dir, "*.pt"))
+        for f in initial_old_files:
+            try:
+                os.remove(f)
+            except Exception:
+                pass
 
     # 1. Chọn cấu hình mô hình
     if version.lower() == "version9":

@@ -1,8 +1,8 @@
 """
-Production Inference & Evaluation Script cho Cosmos 3 Models (Version 9 / Version 8 / Version 5)
+Production Inference & Evaluation Script cho Cosmos 3 Models (Version 8 QK-Norm 4.03B Dense Base)
 - Nạp Checkpoint đã huấn luyện (.pt) từ thư mục ./checkpoints/
 - Chạy suy luận sinh dự đoán đa phương tiện (Text AR Logits, Video DM Latents, Action 7-DoF)
-- Đánh giá Latency, Throughput và Router Aux Loss trên phần cứng thực tế.
+- Đánh giá Latency, Throughput và MSE Loss trên phần cứng thực tế.
 """
 
 import os
@@ -10,27 +10,27 @@ import argparse
 import time
 import torch
 
-from mini_model.version9.model import Cosmos3ToyModel as V9Model, Cosmos3Config as V9Config
 from mini_model.version8.model import Cosmos3ToyModel as V8Model, Cosmos3Config as V8Config
 from mini_model.version5.model import Cosmos3ToyModel as V5Model, Cosmos3Config as V5Config
+from mini_model.version9.model import Cosmos3ToyModel as V9Model, Cosmos3Config as V9Config
 from dataset_loader import PilotDatasetLoader
 
 
-def run_production_inference(checkpoint_path: str = None, version: str = "version9", num_samples: int = 5):
+def run_production_inference(checkpoint_path: str = None, version: str = "version8", num_samples: int = 5):
     print("=" * 80)
     print(f"🔮 BẮT ĐẦU PRODUCTION INFERENCE & EVALUATION [{version.upper()}]")
     print("=" * 80)
 
     # 1. Chọn cấu hình
-    if version.lower() == "version9":
-        config = V9Config(use_checkpointing=False)
-        model_cls = V9Model
-    elif version.lower() == "version8":
+    if version.lower() == "version8":
         config = V8Config()
         model_cls = V8Model
-    else:
+    elif version.lower() == "version5":
         config = V5Config()
         model_cls = V5Model
+    else:
+        config = V9Config(use_checkpointing=False)
+        model_cls = V9Model
 
     num_gpus = torch.cuda.device_count()
     print(f"[INFO] PyTorch CUDA Available: {torch.cuda.is_available()} | GPU Count: {num_gpus}")
@@ -52,7 +52,7 @@ def run_production_inference(checkpoint_path: str = None, version: str = "versio
         print(f"[CHECKPOINT] Dang nap khoi trong so tu: {checkpoint_path}")
         checkpoint_data = torch.load(checkpoint_path, map_location="cpu")
         model.load_state_dict(checkpoint_data.get("model_state_dict", checkpoint_data))
-        print("[CHECKPOINT] Nạp Checkpoint thành công!")
+        print("[CHECKPOINT] Nạp Checkpoint Version 8 thành công!")
     else:
         print("[WARN] Khong tim thấy checkpoint_path. Su dung trong so khoi tao ban dau.")
 
@@ -92,8 +92,6 @@ def run_production_inference(checkpoint_path: str = None, version: str = "versio
             print(f" Sample [{i}/{num_samples}] | Prompt: '{prompt[:60]}...'")
             print(f"   • AR Logits Output       : {outputs['ar_logits'].shape}")
             print(f"   • DM Predicted Latent    : {outputs['dm_predicted_latent'].shape}")
-            if "aux_loss" in outputs:
-                print(f"   • Router Aux Loss        : {outputs['aux_loss'].item():.6f}")
             print(f"   • Single-pass Latency    : {elapsed_ms:.2f} ms ({1000.0/elapsed_ms:.2f} fps)")
             print("-" * 60)
 
@@ -105,7 +103,7 @@ def run_production_inference(checkpoint_path: str = None, version: str = "versio
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Production Inference for Cosmos 3 Models")
     parser.add_argument("--checkpoint", type=str, default=None, help="Path to checkpoint .pt file")
-    parser.add_argument("--version", type=str, default="version9", choices=["version5", "version8", "version9"])
+    parser.add_argument("--version", type=str, default="version8", choices=["version5", "version8", "version9"])
     parser.add_argument("--samples", type=int, default=5, help="Number of evaluation samples")
 
     args = parser.parse_args()

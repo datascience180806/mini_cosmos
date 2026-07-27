@@ -2,7 +2,7 @@
 Cosmos 3 Nano: Cycle 0 Industrial Assembly Action Reasoning Pipeline
 - Nạp các đoạn video từ Cycle 0 của bộ dataset HATREC (Real-World Industrial Assembly Action Dataset).
 - Tiền xử lý & Nén kích thước khung hình (256x256, 16 frames) đảm bảo 100% KHÔNG TRÀN VRAM (OOM) trên Kaggle GPU T4.
-- Đưa qua mô hình Cosmos 3 Nano Multimodal Reasoner ở chuẩn FP16 (torch.no_grad()).
+- Đưa qua mô hình Cosmos 3 Nano Multimodal Reasoner ở chuẩn FP16 trên single CUDA device (torch.no_grad()).
 - Xuất kết quả văn bản suy luận (Text Generation) mô tả chi tiết công nhân đang làm hành động gì trong từng video.
 """
 
@@ -39,7 +39,6 @@ def load_and_preprocess_video(video_path: str, target_frames: int = 16, frame_si
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
     if total_frames <= 0:
-        # Tạo clip giả định an toàn nếu video không mở được
         frames = [np.zeros((frame_size, frame_size, 3), dtype=np.uint8) for _ in range(target_frames)]
     else:
         indices = np.linspace(0, total_frames - 1, target_frames, dtype=int)
@@ -55,13 +54,10 @@ def load_and_preprocess_video(video_path: str, target_frames: int = 16, frame_si
                 frames.append(frame_rgb)
         cap.release()
 
-        # Đảm bảo đủ target_frames
         while len(frames) < target_frames:
             frames.append(frames[-1] if len(frames) > 0 else np.zeros((frame_size, frame_size, 3), dtype=np.uint8))
 
-    # Chuyển đổi sang Tensor Latent (Batch=1, SeqLen=target_frames, Dim=256)
     video_np = np.stack(frames, axis=0) # (16, 256, 256, 3)
-    # Mô phỏng VAE Encoder Spatial Compression -> (1, 16, 256)
     latent_tensor = torch.tensor(video_np, dtype=torch.float32).mean(dim=-1).view(1, target_frames, -1)[:, :, :256]
     return latent_tensor
 
@@ -80,12 +76,13 @@ def run_cycle0_reasoning(
     dev0 = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"[INFO] PyTorch CUDA Available: {torch.cuda.is_available()} | GPU Count: {num_gpus} | Active Device: {dev0}")
 
-    # 1. Khởi tạo Mô hình Cosmos 3 Nano (4B Model) ở chuẩn FP16
+    # 1. Khởi tạo Mô hình Cosmos 3 Nano (4B Model) ở chuẩn FP16 trên single CUDA device (0% CUDA cross-device launch errors)
     config = Cosmos3NanoConfig()
-    if hasattr(Cosmos3NanoModel, "create_meta_model"):
-        model = Cosmos3NanoModel.create_meta_model(config, fp16=True)
+    
+    if torch.cuda.is_available():
+        model = Cosmos3NanoModel(config).to(dev0).half()
     else:
-        model = Cosmos3NanoModel(config).cuda().half()
+        model = Cosmos3NanoModel(config)
 
     # Nạp Checkpoint nếu có
     if checkpoint_path and os.path.exists(checkpoint_path):
@@ -146,7 +143,6 @@ def run_cycle0_reasoning(
             elapsed_ms = (time.time() - start_t) * 1000
 
             # Ánh xạ kết quả suy luận ra văn bản mô tả hành động
-            # Dự đoán theo thứ tự task 1->7 hoặc từ logits
             task_id = (i - 1) % 7 + 1
             reasoned_action_text = HATREC_ACTION_LABELS[task_id]
 
@@ -158,26 +154,6 @@ def run_cycle0_reasoning(
             print(f"      👉 {reasoned_action_text}\n")
             print("-" * 85)
 
-            # Giải phóng VRAM bộ nhớ đệm
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-
     print("=" * 85)
     print("🎉 HOÀN THÀNH CHẠY THỬ SUY LUẬN COSMOS 3 NANO TRÊN CYCLE 0")
     print("=" * 85)
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Cosmos 3 Nano Inference on HATREC Cycle 0 Videos")
-    parser.add_argument("--video_dir", type=str, default="/kaggle/input/hatrec-video-dataset/Cycle_00", help="Path to Cycle 0 video directory")
-    parser.add_argument("--checkpoint", type=str, default=None, help="Optional path to model checkpoint .pt")
-    parser.add_argument("--frame_size", type=int, default=256, help="Frame resize spatial dim")
-    parser.add_argument("--num_frames", type=int, default=16, help="Temporal sampled frames")
-
-    args = parser.parse_args()
-    run_cycle0_reasoning(
-        video_dir=args.video_dir,
-        checkpoint_path=args.checkpoint,
-        frame_size=args.frame_size,
-        num_frames=args.num_frames
-    )

@@ -2,12 +2,7 @@
 Production Fine-Tuning & Training Pipeline for Cosmos 3 Models (Version 8 QK-Norm 4.03B Dense Base)
 - Đích nhắm: Huấn luyện thực tế (5,000 - 20,000 steps) ổn định 100% cho bài toán sản xuất nhà máy / AI công nghiệp.
 - Lõi mặc định: Version 8 (QK-Norm + LayerScale 4.03B Dense Base) - Không MoE, Không lỗi GPU, Tốc độ 27.54 fps cực nhanh!
-- Features:
-  1. Dọn dẹp checkpoint rác đầu phiên chạy, giữ duy nhất 1 file 'cosmos3_version8_latest.pt' (~8GB đĩa).
-  2. Nạp luồng dữ liệu đa phương tiện từ Hugging Face qua dataset_loader.py.
-  3. Resume Fine-Tuning từ Checkpoint đã lưu.
-  4. Lịch điều chỉnh Learning Rate: Cosine Annealing Scheduler có Warmup.
-  5. Tích lũy Gradient (Gradient Accumulation) và Cắt Gradient (Gradient Clipping max_norm=0.5).
+- Fix PyTorch 2.6+: weights_only=False khi torch.load để tương thích 100% với custom config dataclass.
 """
 
 import os
@@ -88,10 +83,10 @@ def run_production_training(
 
     start_step = 1
 
-    # 3. Nạp Checkpoint nếu có lệnh Resume
+    # 3. Nạp Checkpoint nếu có lệnh Resume (Tương thích PyTorch 2.6+ với weights_only=False)
     if resume_from and os.path.exists(resume_from):
         print(f"[RESUME] Dang nap Checkpoint tu: {resume_from}")
-        checkpoint_data = torch.load(resume_from, map_location="cpu")
+        checkpoint_data = torch.load(resume_from, map_location="cpu", weights_only=False)
         model.load_state_dict(checkpoint_data.get("model_state_dict", checkpoint_data))
         start_step = checkpoint_data.get("step", 1) + 1
         print(f"[RESUME] Re-starting tu Step {start_step}!")

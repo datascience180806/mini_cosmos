@@ -47,10 +47,10 @@ def run_production_inference(checkpoint_path: str = None, version: str = "versio
         if os.path.exists(default_ckpt):
             checkpoint_path = default_ckpt
 
-    # 3. Nạp Checkpoint nếu có
+    # 3. Nạp Checkpoint nếu có (Sử dụng weights_only=False cho PyTorch 2.6+)
     if checkpoint_path and os.path.exists(checkpoint_path):
         print(f"[CHECKPOINT] Dang nap khoi trong so tu: {checkpoint_path}")
-        checkpoint_data = torch.load(checkpoint_path, map_location="cpu")
+        checkpoint_data = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
         model.load_state_dict(checkpoint_data.get("model_state_dict", checkpoint_data))
         print("[CHECKPOINT] Nạp Checkpoint Version 8 thành công!")
     else:

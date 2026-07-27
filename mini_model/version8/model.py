@@ -220,13 +220,13 @@ class Cosmos3ToyModel(nn.Module):
         self.dm_vision_head = nn.Linear(config.hidden_dim, config.latent_dim)
 
     @classmethod
-    def create_meta_model(cls, config: Cosmos3Config, fp16: bool = True):
+    def create_meta_model(cls, config: Cosmos3Config, fp16: bool = True, single_gpu: bool = False):
         """
         Tạo mô hình Version 8 trên 'meta' device (0 MB System RAM), sau đó allocate trực tiếp trên GPU VRAM.
         """
         num_gpus = torch.cuda.device_count()
         dev0 = torch.device("cuda:0") if num_gpus > 0 else torch.device("cpu")
-        dev1 = torch.device("cuda:1") if num_gpus > 1 else dev0
+        dev1 = dev0 if (single_gpu or num_gpus < 2) else torch.device("cuda:1")
 
         if fp16:
             torch.set_default_dtype(torch.float16)
@@ -244,7 +244,7 @@ class Cosmos3ToyModel(nn.Module):
         model.action_proj = model.action_proj.to_empty(device=dev0)
 
         for idx, block in enumerate(model.blocks):
-            target_dev = dev0 if (idx < half or num_gpus < 2) else dev1
+            target_dev = dev0 if (idx < half or single_gpu or num_gpus < 2) else dev1
             block.to_empty(device=target_dev)
 
         model.norm_f = model.norm_f.to_empty(device=dev0)
@@ -262,7 +262,8 @@ class Cosmos3ToyModel(nn.Module):
         with torch.no_grad():
             model.apply(_init_weights)
 
-        print(f"[SUCCESS] Khoi tao Version 8 QK-Norm Model (~4.03B Params) Meta Shell thanh cong! Dispatched across {num_gpus} GPUs.")
+        dispatched_gpus = 1 if single_gpu or num_gpus < 2 else num_gpus
+        print(f"[SUCCESS] Khoi tao Version 8 QK-Norm Model (~4.03B Params) Meta Shell (0 MB CPU RAM) thanh cong! Dispatched across {dispatched_gpus} GPUs.")
         return model
 
     def forward(
@@ -316,7 +317,9 @@ class Cosmos3ToyModel(nn.Module):
 
         h = x_seq
         half_layers = len(self.blocks) // 2
-        is_multi_gpu = torch.cuda.device_count() >= 2
+        first_dev = self.blocks[0].gamma_1.device
+        last_dev = self.blocks[-1].gamma_1.device
+        is_multi_gpu = (first_dev != last_dev)
 
         for i, block in enumerate(self.blocks):
             if is_multi_gpu:

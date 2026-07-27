@@ -4,7 +4,7 @@ Version 9: Unified Mixture-of-Experts (MoE) World Model Architecture
 - Tầng Chuyên Gia MoE: 4 Experts (Language, Physics/Video, Robotics Action, Geometry/Depth)
 - Mạng Điều Phối Router: Top-2 Routing với Gating Weight Normalization
 - Quy Mô Chuẩn: ~7.26 B Total Params / ~4.03 B Active Params per token (mlp_ratio=1.75)
-- Gradient Checkpointing: Giảm 85% bộ nhớ đệm Activations khi Backward pass trên Dual GPUs
+- Gradient Checkpointing & Device/Dtype Auto-Casting: Chống 100% Float vs Half Mismatch trên CPU/GPU
 """
 
 import math
@@ -21,9 +21,6 @@ import torch.utils.checkpoint as checkpoint
 class Cosmos3Config:
     """
     Cấu hình thông số kỹ thuật cho Version 9 (MoE QK-Norm Architecture ~7.26B Total / ~4.03B Active)
-    - hidden_dim: 3072
-    - num_layers: 32 layers
-    - num_experts: 4 (mlp_ratio: 1.75 per expert -> ~7.26B Total Params)
     """
     hidden_dim: int = 3072           # Dim không gian nhúng
     num_heads: int = 24              # 24 Query Attention Heads
@@ -54,8 +51,8 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if x.device != self.weight.device:
-            x = x.to(self.weight.device)
+        if x.device != self.weight.device or x.dtype != self.weight.dtype:
+            x = x.to(device=self.weight.device, dtype=self.weight.dtype)
         variance = x.pow(2).mean(-1, keepdim=True)
         return x * torch.rsqrt(variance + self.eps) * self.weight
 
@@ -149,9 +146,9 @@ class QKNormGroupedQueryAttention(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
         if attn_mask is not None:
-            if attn_mask.device != scores.device:
-                attn_mask = attn_mask.to(scores.device)
-            scores = scores + attn_mask.unsqueeze(0).unsqueeze(0).to(scores.dtype)
+            if attn_mask.device != scores.device or attn_mask.dtype != scores.dtype:
+                attn_mask = attn_mask.to(device=scores.device, dtype=scores.dtype)
+            scores = scores + attn_mask.unsqueeze(0).unsqueeze(0)
 
         attn_weights = F.softmax(scores, dim=-1)
         attn_weights = self.dropout(attn_weights)
@@ -245,10 +242,11 @@ class Cosmos3BlockV9(nn.Module):
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> Tuple[torch.Tensor, torch.Tensor]:
         target_dev = self.gamma_1.device
-        if x.device != target_dev:
-            x = x.to(target_dev)
-        if attn_mask is not None and attn_mask.device != target_dev:
-            attn_mask = attn_mask.to(target_dev)
+        target_dtype = self.gamma_1.dtype
+        if x.device != target_dev or x.dtype != target_dtype:
+            x = x.to(device=target_dev, dtype=target_dtype)
+        if attn_mask is not None and (attn_mask.device != target_dev or attn_mask.dtype != target_dtype):
+            attn_mask = attn_mask.to(device=target_dev, dtype=target_dtype)
 
         x = x + self.gamma_1 * self.attn(self.norm1(x), attn_mask=attn_mask)
         moe_out, aux_loss = self.moe(self.norm2(x))
@@ -340,16 +338,22 @@ class Cosmos3ToyModel(nn.Module):
         seq_len_dm = 0
 
         if dm_latent is not None:
+            if dm_latent.dtype != self.dm_vision_proj.weight.dtype or dm_latent.device != self.dm_vision_proj.weight.device:
+                dm_latent = dm_latent.to(device=self.dm_vision_proj.weight.device, dtype=self.dm_vision_proj.weight.dtype)
             x_dm_vis = self.dm_vision_proj(dm_latent)
             dm_embeds.append(x_dm_vis)
             seq_len_dm += x_dm_vis.shape[1]
 
         if audio_features is not None:
+            if audio_features.dtype != self.audio_proj.weight.dtype or audio_features.device != self.audio_proj.weight.device:
+                audio_features = audio_features.to(device=self.audio_proj.weight.device, dtype=self.audio_proj.weight.dtype)
             x_audio = self.audio_proj(audio_features)
             dm_embeds.append(x_audio)
             seq_len_dm += x_audio.shape[1]
 
         if action_vectors is not None:
+            if action_vectors.dtype != self.action_proj.weight.dtype or action_vectors.device != self.action_proj.weight.device:
+                action_vectors = action_vectors.to(device=self.action_proj.weight.device, dtype=self.action_proj.weight.dtype)
             x_action = self.action_proj(action_vectors)
             dm_embeds.append(x_action)
             seq_len_dm += x_action.shape[1]

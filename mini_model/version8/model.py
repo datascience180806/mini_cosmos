@@ -41,6 +41,8 @@ class RMSNorm(nn.Module):
         self.weight = nn.Parameter(torch.ones(dim))
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if x.device != self.weight.device or x.dtype != self.weight.dtype:
+            x = x.to(device=self.weight.device, dtype=self.weight.dtype)
         variance = x.pow(2).mean(-1, keepdim=True)
         return x * torch.rsqrt(variance + self.eps) * self.weight
 
@@ -138,7 +140,9 @@ class QKNormGroupedQueryAttention(nn.Module):
         scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
 
         if attn_mask is not None:
-            scores = scores + attn_mask.unsqueeze(0).unsqueeze(0).to(scores.dtype)
+            if attn_mask.device != scores.device or attn_mask.dtype != scores.dtype:
+                attn_mask = attn_mask.to(device=scores.device, dtype=scores.dtype)
+            scores = scores + attn_mask.unsqueeze(0).unsqueeze(0)
 
         attn_weights = F.softmax(scores, dim=-1)
         attn_weights = self.dropout(attn_weights)
@@ -180,6 +184,13 @@ class Cosmos3BlockV8(nn.Module):
         self.gamma_2 = nn.Parameter(config.layer_scale_init_value * torch.ones(config.hidden_dim))
 
     def forward(self, x: torch.Tensor, attn_mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        target_dev = self.gamma_1.device
+        target_dtype = self.gamma_1.dtype
+        if x.device != target_dev or x.dtype != target_dtype:
+            x = x.to(device=target_dev, dtype=target_dtype)
+        if attn_mask is not None and (attn_mask.device != target_dev or attn_mask.dtype != target_dtype):
+            attn_mask = attn_mask.to(device=target_dev, dtype=target_dtype)
+
         x = x + self.gamma_1 * self.attn(self.norm1(x), attn_mask=attn_mask)
         x = x + self.gamma_2 * self.mlp(self.norm2(x))
         return x
@@ -272,16 +283,22 @@ class Cosmos3ToyModel(nn.Module):
         seq_len_dm = 0
 
         if dm_latent is not None:
+            if dm_latent.dtype != self.dm_vision_proj.weight.dtype or dm_latent.device != self.dm_vision_proj.weight.device:
+                dm_latent = dm_latent.to(device=self.dm_vision_proj.weight.device, dtype=self.dm_vision_proj.weight.dtype)
             x_dm_vis = self.dm_vision_proj(dm_latent)
             dm_embeds.append(x_dm_vis)
             seq_len_dm += x_dm_vis.shape[1]
 
         if audio_features is not None:
+            if audio_features.dtype != self.audio_proj.weight.dtype or audio_features.device != self.audio_proj.weight.device:
+                audio_features = audio_features.to(device=self.audio_proj.weight.device, dtype=self.audio_proj.weight.dtype)
             x_audio = self.audio_proj(audio_features)
             dm_embeds.append(x_audio)
             seq_len_dm += x_audio.shape[1]
 
         if action_vectors is not None:
+            if action_vectors.dtype != self.action_proj.weight.dtype or action_vectors.device != self.action_proj.weight.device:
+                action_vectors = action_vectors.to(device=self.action_proj.weight.device, dtype=self.action_proj.weight.dtype)
             x_action = self.action_proj(action_vectors)
             dm_embeds.append(x_action)
             seq_len_dm += x_action.shape[1]

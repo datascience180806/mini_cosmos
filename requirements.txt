@@ -2,3 +2,7 @@ torch>=2.0.0
 torchvision>=0.15.0
 numpy>=1.24.0
 tqdm>=4.65.0
+transformers>=4.45.0 
+accelerate 
+opencv-python 
+qwen-vl-utils

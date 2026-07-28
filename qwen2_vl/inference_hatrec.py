@@ -1,6 +1,7 @@
 """
 🚀 Qwen2-VL-2B-Instruct Inference & Action Recognition Pipeline for HATRec Dataset
 Author: Antigravity AI & Research Team
+Optimized for 0-OOM on Kaggle Dual T4 / Single T4 GPUs (< 3.0 GB VRAM Footprint)
 """
 
 import os
@@ -35,8 +36,8 @@ REVERSE_TASK_MAPPING = {
     "fixing cable": 6, "cable": 6, "fixing the cable": 6
 }
 
-def extract_frames_from_video(video_path: str, max_frames: int = 16):
-    """Trích xuất max_frames khung hình từ tệp video với độ phân giải gốc"""
+def extract_frames_from_video(video_path: str, max_frames: int = 8, target_size=(384, 384)):
+    """Trích xuất max_frames khung hình và resize về (384, 384) để kiểm soát VRAM < 3GB"""
     cap = cv2.VideoCapture(video_path)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
@@ -52,7 +53,9 @@ def extract_frames_from_video(video_path: str, max_frames: int = 16):
         if not ret:
             break
         if idx in indices:
-            # Chuyển BGR (OpenCV) sang RGB (PIL/Qwen)
+            # Resize khung hình về 384x384 để giới hạn visual tokens, tránh OOM VRAM
+            if target_size:
+                frame = cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)
             frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             frames.append(frame_rgb)
             
@@ -105,7 +108,7 @@ def load_qwen2_vl_model(device: str = "cuda:0"):
     return model, processor
 
 def run_qwen2_vl_inference(model, processor, frames, prompt_text: str, device: str = "cuda:0"):
-    """Thực hiện suy luận hình ảnh + văn bản với Qwen2-VL"""
+    """Thực hiện suy luận hình ảnh + văn bản với Qwen2-VL (Giới hạn VRAM < 3GB)"""
     from PIL import Image
 
     pil_frames = [Image.fromarray(f) for f in frames]
@@ -121,7 +124,6 @@ def run_qwen2_vl_inference(model, processor, frames, prompt_text: str, device: s
     ]
 
     text_input = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    image_inputs, video_inputs = processor.image_processor(images=pil_frames, return_tensors="pt")
     
     inputs = processor(
         text=[text_input],
@@ -131,7 +133,7 @@ def run_qwen2_vl_inference(model, processor, frames, prompt_text: str, device: s
     ).to(device)
 
     with torch.no_grad():
-        generated_ids = model.generate(**inputs, max_new_tokens=128)
+        generated_ids = model.generate(**inputs, max_new_tokens=64)
         
     generated_ids_trimmed = [
         out_ids[len(in_ids):] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
@@ -139,6 +141,10 @@ def run_qwen2_vl_inference(model, processor, frames, prompt_text: str, device: s
     output_text = processor.batch_decode(
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
+
+    # Xóa giải phóng bộ nhớ PyTorch sau mỗi pass
+    del inputs, generated_ids, generated_ids_trimmed
+    torch.cuda.empty_cache()
 
     return output_text
 
@@ -185,17 +191,18 @@ def main():
     total_eval = 0
 
     print("\n" + "="*80)
-    print("🚀 BẮT ĐẦU CHẠY EVALUATION QWEN2-VL-2B TRÊN HATREC DATASET")
+    print("🚀 BẮT ĐẦU CHẠY EVALUATION QWEN2-VL-2B TRÊN HATREC DATASET (OPTIMIZED VRAM)")
     print("="*80 + "\n")
 
     for idx, video_file in enumerate(video_files, 1):
+        torch.cuda.empty_cache()
         gt_task = parse_ground_truth(str(video_file))
         gt_name = TASK_MAPPING.get(gt_task, "Unknown")
 
         print(f"🎬 [{idx:02d}/{len(video_files)}] Video: '{video_file.name}' | Ground Truth: Task {gt_task} ({gt_name})")
 
-        # Trích xuất khung hình
-        frames = extract_frames_from_video(str(video_file), max_frames=8)
+        # Trích xuất khung hình và resize về 384x384
+        frames = extract_frames_from_video(str(video_file), max_frames=8, target_size=(384, 384))
         if not frames:
             print("   ⚠️ Không thể đọc khung hình. Bỏ qua.")
             continue

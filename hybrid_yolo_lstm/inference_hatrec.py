@@ -1,5 +1,5 @@
 """
-🚀 Hybrid YOLOv8 + LSTM Inference & Evaluation Pipeline on HATRec Dataset
+🚀 Hybrid YOLOv8 + LSTM Inference & Evaluation Pipeline on Unseen Test Split
 Author: Antigravity AI & Research Team
 Speed: > 100 FPS | VRAM: < 0.5 GB | Latency: ~10 ms / video
 """
@@ -29,27 +29,18 @@ TASK_MAPPING = {
 }
 
 def parse_ground_truth(file_path: str):
-    """
-    Bóc tách Ground Truth Task ID (0 đến 6) linh hoạt từ mọi quy chuẩn đặt tên HATRec
-    """
+    """Bóc tách Ground Truth Task ID (0 đến 6) linh hoạt từ mọi quy chuẩn đặt tên HATRec"""
     name = Path(file_path).name.lower()
     parent = Path(file_path).parent.name.lower()
 
-    # Pattern 1: task_0 đến task_6
     m = re.search(r'task_?0*([0-6])\b', name) or re.search(r'task_?0*([0-6])\b', parent)
     if m:
         return int(m.group(1))
 
-    # Pattern 2: task_1 đến task_7 (chuyển về 0-6)
     m7 = re.search(r'task_?0*([1-7])\b', name) or re.search(r'task_?0*([1-7])\b', parent)
     if m7:
         val = int(m7.group(1))
         return val - 1 if val >= 1 else 0
-
-    # Pattern 3: số bất kỳ từ 0 đến 6 ở cuối tên file
-    m_end = re.search(r'_([0-6])\.(mp4|avi)$', name)
-    if m_end:
-        return int(m_end.group(1))
 
     return None
 
@@ -92,7 +83,6 @@ def extract_and_preprocess_video(video_path: str, seq_len: int = 16, target_size
         if idx in indices:
             frame_resized = cv2.resize(frame, target_size, interpolation=cv2.INTER_AREA)
             frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
-            # Chuẩn hóa ImageNet [0, 1]
             frame_norm = frame_rgb.astype(np.float32) / 255.0
             frame_chw = np.transpose(frame_norm, (2, 0, 1))
             frames.append(frame_chw)
@@ -102,35 +92,42 @@ def extract_and_preprocess_video(video_path: str, seq_len: int = 16, target_size
     if len(frames) < seq_len:
         return None
 
-    # Biến đổi thành Tensor [1, seq_len, 3, 128, 128]
     tensor = torch.tensor(np.array(frames), dtype=torch.float32).unsqueeze(0)
     return tensor
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Hybrid YOLOv8 + LSTM on HATRec Dataset")
+    parser = argparse.ArgumentParser(description="Run Hybrid YOLOv8 + LSTM on Test Split")
     parser.add_argument("--data_dir", type=str, default="/kaggle/input/datasets/ayoznur/hatrec-video-dataset", help="Path to HATRec dataset")
-    parser.add_argument("--weights", type=str, default="", help="Optional trained model weights path")
-    parser.add_argument("--max_videos", type=int, default=546, help="Max videos to evaluate (default all 546)")
+    parser.add_argument("--weights", type=str, default="hybrid_hatrec_split.pth", help="Trained model weights path")
+    parser.add_argument("--eval_test_only", action="store_true", help="Evaluate strictly on 30% unseen Test Set")
+    parser.add_argument("--max_videos", type=int, default=546, help="Max videos to evaluate")
     parser.add_argument("--output_json", type=str, default="hybrid_yolo_lstm_results.json", help="Result JSON path")
     args = parser.parse_args()
 
-    video_files = find_all_dataset_videos(args.data_dir)
-    if not video_files:
-        print(f"❌ KHÔNG TÌM THẤY VIDEO TRONG BẤT KỲ THƯ MỤC NÀO!")
+    all_video_files = find_all_dataset_videos(args.data_dir)
+    if not all_video_files:
+        print("❌ KHÔNG TÌM THẤY VIDEO TRONG BẤT KỲ THƯ MỤC NÀO!")
         sys.exit(1)
 
-    print(f"🎬 Bắt đầu đánh giá (Tối đa: {args.max_videos} videos)...")
-    video_files = video_files[:args.max_videos]
+    # Nếu dùng eval_test_only: Tự động tách 30% tập Test độc lập (Seeded split)
+    if args.eval_test_only:
+        np.random.seed(42)
+        indices = np.random.permutation(len(all_video_files))
+        test_size = int(0.30 * len(all_video_files))
+        test_indices = indices[-test_size:]
+        video_files = [all_video_files[i] for i in test_indices]
+        print(f"🎯 ĐÁNH GIÁ CHUYÊN BIỆT TRÊN TẬP TEST ĐỘC LẬP (30% Unseen Set): {len(video_files)} videos!")
+    else:
+        video_files = all_video_files[:args.max_videos]
 
-    # Khởi tạo mô hình
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     model = HybridYOLOv8LSTM(num_classes=7, seq_len=16)
 
-    if args.weights and os.path.exists(args.weights):
+    if os.path.exists(args.weights):
         model.load_state_dict(torch.load(args.weights, map_location=device))
         print(f"✅ Đã nạp trọng số mô hình từ: '{args.weights}'")
     else:
-        print("ℹ️ Đang chạy mô hình Hybrid YOLOv8 + LSTM ở chế độ khởi tạo đặc trưng (Zero-shot Feature Mode)...")
+        print("ℹ️ Chưa nạp trọng số đã train. Đang chạy mô hình ở chế độ mặc định...")
 
     model.to(device)
     model.eval()
@@ -141,22 +138,19 @@ def main():
     total_latency = 0.0
 
     print("\n" + "="*80)
-    print("🚀 BẮT ĐẦU CHẠY EVALUATION HYBRID YOLOV8 + LSTM TRÊN HATREC DATASET")
+    print("🚀 BẮT ĐẦU CHẠY EVALUATION HYBRID YOLOV8 + LSTM TRÊN TẬP TEST UNSEEN")
     print("="*80 + "\n")
 
     for idx, video_file in enumerate(video_files, 1):
         gt_task = parse_ground_truth(str(video_file))
         gt_name = TASK_MAPPING.get(gt_task, "Unknown")
 
-        # Tiền xử lý video
         video_tensor = extract_and_preprocess_video(str(video_file), seq_len=16, target_size=(128, 128))
         if video_tensor is None:
-            print(f"   ⚠️ Không thể nạp video '{video_file.name}'. Bỏ qua.")
             continue
 
         video_tensor = video_tensor.to(device)
 
-        # Suy luận siêu tốc
         start_t = time.time()
         with torch.no_grad():
             logits = model(video_tensor)
@@ -190,18 +184,17 @@ def main():
     acc = (correct_count / total_eval * 100) if total_eval > 0 else 0
 
     print("\n" + "="*80)
-    print(f"📊 BÁO CÁO KẾT QUẢ EVALUATION HYBRID YOLOV8 + LSTM:")
+    print(f"📊 BÁO CÁO KẾT QUẢ EVALUATION HYBRID YOLOV8 + LSTM (UNSEEN TEST SET):")
     print(f"   • Tổng số Video đánh giá : {total_eval}")
     print(f"   • Số câu trả lời ĐÚNG   : {correct_count}")
-    print(f"   • Độ chính xác (Accuracy): {acc:.2f}%")
-    print(f"   • Thời gian xử lý trung bình: {avg_latency:.2f} ms / video")
-    print(f"   • Tốc độ xử lý (Throughput): {fps:.1f} FPS (Siêu tốc > 100 FPS!)")
+    print(f"   • Độ chính xác TEST (Accuracy): {acc:.2f}%")
+    print(f"   • Thời gian xử lý trung bình  : {avg_latency:.2f} ms / video")
+    print(f"   • Tốc độ xử lý (Throughput)   : {fps:.1f} FPS")
     print("="*80 + "\n")
 
-    # Lưu file kết quả JSON
     with open(args.output_json, "w", encoding="utf-8") as f:
         json.dump({
-            "model": "Hybrid-YOLOv8-LSTM",
+            "model": "Hybrid-YOLOv8-LSTM-UnseenTest",
             "accuracy_percent": acc,
             "total_evaluated": total_eval,
             "correct_count": correct_count,

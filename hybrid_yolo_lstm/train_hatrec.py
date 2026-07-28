@@ -15,16 +15,12 @@ import cv2
 import numpy as np
 
 from hybrid_yolo_lstm.model import HybridYOLOv8LSTM
-from hybrid_yolo_lstm.inference_hatrec import parse_ground_truth, extract_and_preprocess_video
+from hybrid_yolo_lstm.inference_hatrec import parse_ground_truth, extract_and_preprocess_video, find_all_dataset_videos
 
 class HATRecDataset(Dataset):
     """PyTorch Dataset Loader for HATRec Industrial Assembly Videos"""
     def __init__(self, data_dir: str, seq_len: int = 16):
-        self.data_path = Path(data_dir)
-        if not self.data_path.exists():
-            self.data_path = Path("./videos")
-
-        all_videos = sorted(list(self.data_path.rglob("*.mp4")) + list(self.data_path.rglob("*.avi")))
+        all_videos = find_all_dataset_videos(data_dir)
         self.items = []
         for v in all_videos:
             gt = parse_ground_truth(str(v))
@@ -32,6 +28,7 @@ class HATRecDataset(Dataset):
                 self.items.append((str(v), gt))
 
         self.seq_len = seq_len
+        print(f"✅ Đã chuẩn bị được {len(self.items)} tệp video hợp lệ kèm Ground-Truth cho quá trình Train!")
 
     def __len__(self):
         return len(self.items)
@@ -61,7 +58,6 @@ def train_hybrid_model():
         print("❌ Không tìm thấy video hợp lệ để train!")
         sys.exit(1)
 
-    print(f"📦 Tổng số samples dùng để train: {len(dataset)}")
     train_loader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, drop_last=False)
 
     model = HybridYOLOv8LSTM(num_classes=7, seq_len=16).to(device)
@@ -90,8 +86,8 @@ def train_hybrid_model():
             correct += (preds == labels).sum().item()
             total += labels.size(0)
 
-        epoch_loss = running_loss / total
-        epoch_acc = (correct / total) * 100.0
+        epoch_loss = running_loss / total if total > 0 else 0
+        epoch_acc = (correct / total * 100.0) if total > 0 else 0
         print(f"Epoch [{epoch:02d}/{args.epochs:02d}] | Loss: {epoch_loss:.4f} | Accuracy: {epoch_acc:.2f}%")
 
     total_time = time.time() - start_train_time

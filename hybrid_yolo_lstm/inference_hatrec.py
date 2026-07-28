@@ -29,18 +29,54 @@ TASK_MAPPING = {
 }
 
 def parse_ground_truth(file_path: str):
-    """Bóc tách Ground Truth Task ID từ tên file/thư mục (ví dụ: Task_01.mp4 -> Task 1)"""
+    """
+    Bóc tách Ground Truth Task ID (0 đến 6) linh hoạt từ mọi quy chuẩn đặt tên HATRec:
+    - Cycle_0_task_0.mp4 -> 0
+    - Task_01.mp4 -> 0 (hoặc 1 tùy 0-based/1-based)
+    """
     name = Path(file_path).name.lower()
     parent = Path(file_path).parent.name.lower()
-    
-    match = re.search(r'task_?0*([0-6])', name) or re.search(r'task_?0*([0-6])', parent)
-    if match:
-        return int(match.group(1))
+
+    # Pattern 1: task_0 đến task_6
+    m = re.search(r'task_?0*([0-6])\b', name) or re.search(r'task_?0*([0-6])\b', parent)
+    if m:
+        return int(m.group(1))
+
+    # Pattern 2: task_1 đến task_7 (chuyển về 0-6)
+    m7 = re.search(r'task_?0*([1-7])\b', name) or re.search(r'task_?0*([1-7])\b', parent)
+    if m7:
+        val = int(m7.group(1))
+        return val - 1 if val >= 1 else 0
+
+    # Pattern 3: số bất kỳ từ 0 đến 6 ở cuối tên file
+    m_end = re.search(r'_([0-6])\.(mp4|avi)$', name)
+    if m_end:
+        return int(m_end.group(1))
+
     return None
+
+def find_all_dataset_videos(data_dir: str):
+    """Tìm tất cả video trong data_dir, /kaggle/input, hoặc ./videos"""
+    candidates = [
+        Path(data_dir),
+        Path("./videos"),
+        Path("/kaggle/working/mini_cosmos/videos"),
+        Path("/kaggle/input/real-world-industrial-assembly-action-dataset"),
+        Path("/kaggle/input/hatrec-video-dataset")
+    ]
+
+    for cand in candidates:
+        if cand.exists():
+            vids = sorted(list(cand.rglob("*.mp4")) + list(cand.rglob("*.avi")))
+            if len(vids) > 0:
+                print(f"📂 Tìm thấy {len(vids)} video tại đường dẫn: '{cand}'")
+                return vids
+
+    return []
 
 def extract_and_preprocess_video(video_path: str, seq_len: int = 16, target_size=(128, 128)):
     """Trích xuất và tiền xử lý video về dạng PyTorch Tensor [1, seq_len, 3, 128, 128]"""
-    cap = cv2.VideoCapture(video_path)
+    cap = cv2.VideoCapture(str(video_path))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     
     if total_frames <= 0:
@@ -79,17 +115,12 @@ def main():
     parser.add_argument("--output_json", type=str, default="hybrid_yolo_lstm_results.json", help="Result JSON path")
     args = parser.parse_args()
 
-    # Tìm danh sách tệp video
-    data_path = Path(args.data_dir)
-    if not data_path.exists():
-        data_path = Path("./videos")
-
-    video_files = sorted(list(data_path.rglob("*.mp4")) + list(data_path.rglob("*.avi")))
+    video_files = find_all_dataset_videos(args.data_dir)
     if not video_files:
-        print(f"❌ KHÔNG TÌM THẤY VIDEO TRONG: {args.data_dir} HOẶC ./videos")
+        print(f"❌ KHÔNG TÌM THẤY VIDEO TRONG BẤT KỲ THƯ MỤC NÀO!")
         sys.exit(1)
 
-    print(f"🎬 Tìm thấy tổng cộng {len(video_files)} video. Bắt đầu đánh giá (Tối đa: {args.max_videos} videos)...")
+    print(f"🎬 Bắt đầu đánh giá (Tối đa: {args.max_videos} videos)...")
     video_files = video_files[:args.max_videos]
 
     # Khởi tạo mô hình

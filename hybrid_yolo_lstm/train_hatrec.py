@@ -43,11 +43,11 @@ class HATRecDataset(Dataset):
 
 def train_hybrid_model():
     parser = argparse.ArgumentParser(description="Train Hybrid YOLOv8 + LSTM on HATRec")
-    parser.add_argument("--data_dir", type=str, default="/kaggle/input/real-world-industrial-assembly-action-dataset", help="Path to HATRec dataset")
+    parser.add_argument("--data_dir", type=str, default="/kaggle/input/datasets/ayoznur/hatrec-video-dataset", help="Path to HATRec dataset")
     parser.add_argument("--epochs", type=int, default=15, help="Number of training epochs (default 15)")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size (default 8)")
     parser.add_argument("--lr", type=float, default=1e-3, help="Learning rate")
-    parser.add_argument("--save_path", type=str, default="hybrid_yolo_lstm_hatrec.pth", help="Model checkpoint output path")
+    parser.add_argument("--save_path", type=str, default="hybrid_hatrec.pth", help="Model checkpoint output path")
     args = parser.parse_args()
 
     print("🚀 BẮT ĐẦU HUẤN LUYỆN HYBRID YOLOV8 + LSTM TRÊN HATREC DATASET...")

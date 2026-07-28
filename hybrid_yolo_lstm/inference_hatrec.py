@@ -30,9 +30,7 @@ TASK_MAPPING = {
 
 def parse_ground_truth(file_path: str):
     """
-    Bóc tách Ground Truth Task ID (0 đến 6) linh hoạt từ mọi quy chuẩn đặt tên HATRec:
-    - Cycle_0_task_0.mp4 -> 0
-    - Task_01.mp4 -> 0 (hoặc 1 tùy 0-based/1-based)
+    Bóc tách Ground Truth Task ID (0 đến 6) linh hoạt từ mọi quy chuẩn đặt tên HATRec
     """
     name = Path(file_path).name.lower()
     parent = Path(file_path).parent.name.lower()
@@ -56,13 +54,14 @@ def parse_ground_truth(file_path: str):
     return None
 
 def find_all_dataset_videos(data_dir: str):
-    """Tìm tất cả video trong data_dir, /kaggle/input, hoặc ./videos"""
+    """Tìm tất cả video trong data_dir, /kaggle/input/..., hoặc ./videos"""
     candidates = [
         Path(data_dir),
-        Path("./videos"),
-        Path("/kaggle/working/mini_cosmos/videos"),
+        Path("/kaggle/input/datasets/ayoznur/hatrec-video-dataset"),
+        Path("/kaggle/input/hatrec-video-dataset"),
         Path("/kaggle/input/real-world-industrial-assembly-action-dataset"),
-        Path("/kaggle/input/hatrec-video-dataset")
+        Path("/kaggle/working/mini_cosmos/videos"),
+        Path("./videos")
     ]
 
     for cand in candidates:
@@ -109,7 +108,7 @@ def extract_and_preprocess_video(video_path: str, seq_len: int = 16, target_size
 
 def main():
     parser = argparse.ArgumentParser(description="Run Hybrid YOLOv8 + LSTM on HATRec Dataset")
-    parser.add_argument("--data_dir", type=str, default="/kaggle/input/real-world-industrial-assembly-action-dataset", help="Path to HATRec dataset")
+    parser.add_argument("--data_dir", type=str, default="/kaggle/input/datasets/ayoznur/hatrec-video-dataset", help="Path to HATRec dataset")
     parser.add_argument("--weights", type=str, default="", help="Optional trained model weights path")
     parser.add_argument("--max_videos", type=int, default=546, help="Max videos to evaluate (default all 546)")
     parser.add_argument("--output_json", type=str, default="hybrid_yolo_lstm_results.json", help="Result JSON path")

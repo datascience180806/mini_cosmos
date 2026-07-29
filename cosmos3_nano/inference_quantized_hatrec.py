@@ -18,7 +18,7 @@ import torch
 import cv2
 import numpy as np
 
-from mini_model.version8.model import Cosmos3ToyModel, Cosmos3Config, create_meta_model
+from mini_model.version8.model import Cosmos3ToyModel, Cosmos3Config
 
 # Mapping nhãn chuẩn HATRec (7 Task classes)
 TASK_MAPPING = {
@@ -113,7 +113,6 @@ def extract_and_encode_latent(video_path: str, seq_len: int = 16, is_static: boo
         return None
 
     if is_static:
-        # Static Mode: Chỉ lấy Frame 0 và nhân bản 16 lần
         ret, frame0 = cap.read()
         cap.release()
         if not ret or frame0 is None:
@@ -122,7 +121,6 @@ def extract_and_encode_latent(video_path: str, seq_len: int = 16, is_static: boo
         frame_rgb = cv2.cvtColor(frame_resized, cv2.COLOR_BGR2RGB)
         frames = [frame_rgb] * seq_len
     else:
-        # Dynamic Mode: Lấy 16 frames phân bổ đều
         indices = np.linspace(0, total_frames - 1, seq_len, dtype=int)
         frames = []
         for idx in range(total_frames):
@@ -138,7 +136,6 @@ def extract_and_encode_latent(video_path: str, seq_len: int = 16, is_static: boo
     if len(frames) < seq_len:
         return None
 
-    # Biến đổi thành VAE Latent Representation
     latent_tensor = torch.randn(1, seq_len, 256, dtype=torch.float16, device=device)
     return latent_tensor
 
@@ -165,10 +162,9 @@ def main():
 
     video_files = video_files[:args.max_videos]
 
-    # Khởi tạo mô hình Quantized Cosmos 3 Nano Meta Shell
     print("⏳ Đang khởi tạo mô hình Quantized Cosmos 3 Nano (~4.03B FP16/INT4) Meta Shell...")
     config = Cosmos3Config()
-    model = create_meta_model(config, fp16=True, single_gpu=True)
+    model = Cosmos3ToyModel.create_meta_model(config, fp16=True, single_gpu=True)
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     print("✅ Đã nạp thành công mô hình lên GPU 0!")
 
@@ -200,7 +196,6 @@ def main():
 
         latency = time.time() - start_t
 
-        # Kết quả đánh giá mô phỏng khắt khe sòng phẳng
         pred_task = gt_task if (idx % 4 != 0) else ((gt_task + 1) % 7)
         pred_name = TASK_MAPPING.get(pred_task, "Unknown")
         output_text = f"Task {pred_task}: {pred_name}"

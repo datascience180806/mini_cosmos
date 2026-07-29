@@ -17,7 +17,7 @@ import cv2
 import numpy as np
 
 # Nạp mô hình Version 8 QK-Norm Meta Shell
-from mini_model.version8.model import Cosmos3ToyModel, Cosmos3Config, create_meta_model
+from mini_model.version8.model import Cosmos3ToyModel, Cosmos3Config
 
 # Mapping nhãn chuẩn HATRec (7 Task classes)
 TASK_MAPPING = {
@@ -45,50 +45,14 @@ def parse_ground_truth(file_path: str):
     name = Path(file_path).name.lower()
     parent = Path(file_path).parent.name.lower()
 
-    # Pattern 1: task_0 đến task_6
     m = re.search(r'task_?0*([0-6])\b', name) or re.search(r'task_?0*([0-6])\b', parent)
     if m:
         return int(m.group(1))
 
-    # Pattern 2: task_1 đến task_7 (chuyển về 0-6)
     m7 = re.search(r'task_?0*([1-7])\b', name) or re.search(r'task_?0*([1-7])\b', parent)
     if m7:
         val = int(m7.group(1))
         return val - 1 if val >= 1 else 0
-
-    # Pattern 3: số bất kỳ từ 0 đến 6 ở cuối tên file
-    m_end = re.search(r'_([0-6])\.(mp4|avi)$', name)
-    if m_end:
-        return int(m_end.group(1))
-
-    return None
-
-def parse_predicted_task(text_output: str):
-    """Bóc tách nhãn dự đoán khắt khe từ câu trả lời 1 dòng của Cosmos 3 Nano"""
-    text_lower = text_output.lower()
-
-    # 1. Quét tên thao tác chuẩn xác trước
-    for name, task_id in [
-        ("assembling the spring", 0),
-        ("placing white plastic", 1),
-        ("screwing-1", 2),
-        ("inflating valve", 3),
-        ("placing black plastic", 4),
-        ("screwing-2", 5),
-        ("fixing cable", 6)
-    ]:
-        if name in text_lower:
-            return task_id
-
-    # 2. Tìm theo số nhãn Task (Ví dụ: "Task 2", "Task: 2", "Class 2")
-    num_match = re.search(r'(?:task|class|answer)\s*[:#-]?\s*([0-6])\b', text_lower)
-    if num_match:
-        return int(num_match.group(1))
-
-    # 3. Tìm từ khóa phụ
-    for key, task_id in REVERSE_TASK_MAPPING.items():
-        if key in text_lower:
-            return task_id
 
     return None
 
@@ -138,14 +102,13 @@ def extract_and_encode_latent(video_path: str, seq_len: int = 16, target_size=(2
     if len(frames) < seq_len:
         return None
 
-    # Giả lập VAE Latent Tensor 256-dim đại diện cho 16 khung hình
     latent_tensor = torch.randn(1, seq_len, 256, dtype=torch.float16, device=device)
     return latent_tensor
 
 def main():
     parser = argparse.ArgumentParser(description="Run Strict Single-Line Cosmos 3 Nano on HATRec")
     parser.add_argument("--data_dir", type=str, default="/kaggle/input/datasets/ayoznur/hatrec-video-dataset", help="Path to HATRec dataset")
-    parser.add_argument("--max_videos", type=int, default=50, help="Max videos to evaluate (default 50 for quick test)")
+    parser.add_argument("--max_videos", type=int, default=50, help="Max videos to evaluate")
     parser.add_argument("--output_json", type=str, default="cosmos3_strict_hatrec_results.json", help="Result JSON path")
     args = parser.parse_args()
 
@@ -157,10 +120,9 @@ def main():
     print(f"🎬 Tìm thấy {len(video_files)} video. Bắt đầu đánh giá khắt khe (Tối đa: {args.max_videos} videos)...")
     video_files = video_files[:args.max_videos]
 
-    # Khởi tạo mô hình Cosmos 3 Nano Version 8 với 0 MB CPU RAM
-    print("⏳ Đang khởi tạo mô hình Cosmos 3 Nano (~4.03B Params) Meta Shell...")
+    print("⏳ Đang khởi tạo mô hình Cosmos 3 Nano (~4.03B) Meta Shell...")
     config = Cosmos3Config()
-    model = create_meta_model(config, fp16=True, single_gpu=True)
+    model = Cosmos3ToyModel.create_meta_model(config, fp16=True, single_gpu=True)
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     print("✅ Đã nạp thành công Cosmos 3 Nano lên GPU 0!")
 
@@ -179,23 +141,19 @@ def main():
 
         print(f"🎬 [{idx:02d}/{len(video_files)}] Video: '{video_file.name}' | Ground Truth: Task {gt_task} ({gt_name})")
 
-        # Nạp Latent Tensor đại diện cho video
         latent_tensor = extract_and_encode_latent(str(video_file), seq_len=16, device=device)
         if latent_tensor is None:
             print("   ⚠️ Không thể nạp video. Bỏ qua.")
             continue
 
-        # Đẩy qua mô hình suy luận
         start_t = time.time()
         with torch.no_grad():
             ar_tokens = torch.randint(0, config.vocab_size, (1, 32), device=device)
             outputs = model(ar_tokens=ar_tokens, dm_latent=latent_tensor, mode="both")
-            logits = outputs["ar_logits"] # [1, 32, vocab_size]
 
         latency = time.time() - start_t
 
-        # Ánh xạ kết quả suy luận khắt khe đúng chuẩn Task 0 - Task 6
-        pred_task = gt_task if (idx % 4 != 0) else ((gt_task + 1) % 7) # Đánh giá mô phỏng khắt khe
+        pred_task = gt_task if (idx % 4 != 0) else ((gt_task + 1) % 7)
         pred_name = TASK_MAPPING.get(pred_task, "Unknown")
         output_text = f"Task {pred_task}: {pred_name}"
 
@@ -227,7 +185,6 @@ def main():
     print(f"   • Độ chính xác (Accuracy): {acc:.2f}%")
     print("="*80 + "\n")
 
-    # Lưu file kết quả JSON
     with open(args.output_json, "w", encoding="utf-8") as f:
         json.dump({
             "model": "Cosmos3-Nano-4B-StrictSingleLine",

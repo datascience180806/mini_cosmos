@@ -3,7 +3,8 @@
 Author: Antigravity AI & Research Team
 
 Features:
-- Supports Qwen2-VL-2B-Instruct and Qwen2-VL-7B-Instruct (4-bit/FP16)
+- Supports Qwen2-VL-2B-Instruct and Qwen2-VL-7B-Instruct (4-bit/FP16/BF16)
+- Auto-fallback if bitsandbytes is missing
 - Standard Native Video Inference (Dynamic Motion)
 - Static-Frame Shortcut Test (--static_frame_test): Duplicates Frame 0 16 times to test for Shortcut Learning.
 """
@@ -54,7 +55,6 @@ def parse_predicted_task(text_output: str):
     """Bóc tách nhãn dự đoán từ câu trả lời của Qwen2-VL"""
     text_lower = text_output.lower()
     
-    # 1. Quét tên thao tác chuẩn xác trước
     for name, task_id in [
         ("assembling the spring", 0),
         ("placing white plastic", 1),
@@ -67,12 +67,10 @@ def parse_predicted_task(text_output: str):
         if name in text_lower:
             return task_id
 
-    # 2. Tìm theo số nhãn Task
     num_match = re.search(r'(?:task|class|answer)\s*[:#-]?\s*([0-6])\b', text_lower)
     if num_match:
         return int(num_match.group(1))
 
-    # 3. Tìm từ khóa phụ
     for key, task_id in REVERSE_TASK_MAPPING.items():
         if key in text_lower:
             return task_id
@@ -99,7 +97,7 @@ def create_static_frame_video(video_path: str, temp_output_path: str = "/tmp/sta
     return temp_output_path
 
 def load_qwen2_vl_model(model_id: str = "Qwen/Qwen2-VL-7B-Instruct", device: str = "cuda:0", load_in_4bit: bool = False):
-    """Tải mô hình Qwen2-VL (2B / 7B) với cấu hình nạp linh hoạt"""
+    """Tải mô hình Qwen2-VL (2B / 7B) với cơ chế tự động cài/fallback linh hoạt"""
     print(f"⏳ Đang tải mô hình '{model_id}' (load_in_4bit={load_in_4bit})...")
     start_time = time.time()
 
@@ -108,22 +106,32 @@ def load_qwen2_vl_model(model_id: str = "Qwen/Qwen2-VL-7B-Instruct", device: str
     processor = AutoProcessor.from_pretrained(model_id)
 
     if load_in_4bit:
-        from transformers import BitsAndBytesConfig
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_quant_type="nf4"
-        )
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
-            model_id,
-            quantization_config=bnb_config,
-            device_map=device
-        )
+        try:
+            from transformers import BitsAndBytesConfig
+            bnb_config = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=torch.float16,
+                bnb_4bit_quant_type="nf4"
+            )
+            model = Qwen2VLForConditionalGeneration.from_pretrained(
+                model_id,
+                quantization_config=bnb_config,
+                device_map="auto"
+            )
+        except Exception as e:
+            print(f"⚠️ Không thể nạp 4-bit qua bitsandbytes: {e}. Tự động fallback sang bfloat16/float16...")
+            dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+            model = Qwen2VLForConditionalGeneration.from_pretrained(
+                model_id,
+                torch_dtype=dtype,
+                device_map="auto"
+            )
     else:
+        dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
         model = Qwen2VLForConditionalGeneration.from_pretrained(
             model_id,
-            torch_dtype=torch.float16,
-            device_map=device
+            torch_dtype=dtype,
+            device_map="auto"
         )
 
     print(f"✅ Tải thành công '{model_id}' trong {time.time() - start_time:.2f}s!")
@@ -157,7 +165,7 @@ def run_qwen2_vl_video_inference(model, processor, video_path: str, prompt_text:
         videos=video_inputs,
         padding=True,
         return_tensors="pt",
-    ).to(device)
+    ).to(model.device)
 
     with torch.no_grad():
         generated_ids = model.generate(**inputs, max_new_tokens=64, temperature=0.1, do_sample=False)
@@ -177,9 +185,9 @@ def run_qwen2_vl_video_inference(model, processor, video_path: str, prompt_text:
 def main():
     parser = argparse.ArgumentParser(description="Run Qwen2-VL (2B/7B) on HATRec Dataset")
     parser.add_argument("--data_dir", type=str, default="/kaggle/input/real-world-industrial-assembly-action-dataset", help="Path to HATRec dataset")
-    parser.add_argument("--model_id", type=str, default="Qwen/Qwen2-VL-7B-Instruct", help="Hugging Face Model ID (Qwen/Qwen2-VL-7B-Instruct or Qwen/Qwen2-VL-2B-Instruct)")
-    parser.add_argument("--load_in_4bit", action="store_true", help="Load 7B model in 4-bit NF4 to save VRAM on single GPU")
-    parser.add_argument("--max_videos", type=int, default=50, help="Max videos to evaluate (default 50 for quick test)")
+    parser.add_argument("--model_id", type=str, default="Qwen/Qwen2-VL-7B-Instruct", help="Hugging Face Model ID")
+    parser.add_argument("--load_in_4bit", action="store_true", help="Load 7B model in 4-bit NF4 to save VRAM")
+    parser.add_argument("--max_videos", type=int, default=546, help="Max videos to evaluate")
     parser.add_argument("--static_frame_test", action="store_true", help="Enable Static-Frame Shortcut Test (repeats Frame 0 16 times)")
     parser.add_argument("--output_json", type=str, default="", help="Result JSON path")
     args = parser.parse_args()
@@ -207,11 +215,9 @@ def main():
 
     video_files = video_files[:args.max_videos]
 
-    # Khởi tạo mô hình
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     model, processor = load_qwen2_vl_model(model_id=args.model_id, device=device, load_in_4bit=args.load_in_4bit)
 
-    # Câu Prompt mở đường chuẩn hóa cho 7 thao tác nhà máy
     prompt_text = (
         "You are an industrial assembly action recognition expert.\n"
         "Watch this video carefully and classify the exact assembly action being performed into one of these 7 choices:\n"
@@ -241,7 +247,7 @@ def main():
         gt_task = parse_ground_truth(str(video_file))
         gt_name = TASK_MAPPING.get(gt_task, "Unknown")
 
-        print(f"🎬 [{idx:02d}/{len(video_files)}] Video: '{video_file.name}' | Ground Truth: Task {gt_task} ({gt_name})")
+        print(f"🎬 [{idx:03d}/{len(video_files)}] Video: '{video_file.name}' | Ground Truth: Task {gt_task} ({gt_name})")
 
         if args.static_frame_test:
             eval_video_path = create_static_frame_video(str(video_file), temp_output_path=temp_static_video, num_frames=16)

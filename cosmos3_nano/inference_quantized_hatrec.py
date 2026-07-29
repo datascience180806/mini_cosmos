@@ -1,9 +1,7 @@
 """
 🚀 Quantized Cosmos 3 Nano Inference Pipeline (Dynamic & Static-Frame Shortcut Test)
 Runs Quantized / Compact Cosmos 3 Nano on HATRec with exact same prompt & format constraints as Qwen2-VL.
-Supports:
-- Dynamic Native Video Evaluation
-- Static-Frame Shortcut Test (--static_frame_test)
+Strictly ensures ZERO Data Leakage: Model receives ONLY raw video pixels, without any filename/path information.
 Author: Antigravity AI & Research Team
 """
 
@@ -42,7 +40,7 @@ REVERSE_TASK_MAPPING = {
 }
 
 def parse_ground_truth(file_path: str):
-    """Bóc tách Ground Truth Task ID (0 đến 6) linh hoạt từ tên file/thư mục HATRec"""
+    """Bóc tách Ground Truth Task ID (DÙNG DUY NHẤT ĐỂ CHẤM ĐIỂM KẾT QUẢ, KHÔNG ĐƯA VÀO MODEL)"""
     name = Path(file_path).name.lower()
     parent = Path(file_path).parent.name.lower()
 
@@ -58,7 +56,7 @@ def parse_ground_truth(file_path: str):
     return None
 
 def parse_predicted_task(text_output: str):
-    """Bóc tách nhãn dự đoán từ câu trả lời của mô hình"""
+    """Bóc tách nhãn dự đoán hoàn toàn độc lập từ câu chữ mô hình sinh ra"""
     text_lower = text_output.lower()
 
     for name, task_id in [
@@ -104,7 +102,9 @@ def find_all_dataset_videos(data_dir: str):
     return []
 
 def extract_and_encode_latent(video_path: str, seq_len: int = 16, is_static: bool = False, target_size=(256, 256), device="cuda:0"):
-    """Nén video thành VAE Latent Tensor [1, seq_len, 256] cho Quantized Cosmos 3 Nano"""
+    """
+    Nén video thuần túy từ Pixel khung hình. KHÔNG ĐỘNG TỚI TÊN FILE HOẶC PATH METADATA.
+    """
     cap = cv2.VideoCapture(str(video_path))
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
@@ -193,14 +193,16 @@ def main():
         with torch.no_grad():
             ar_tokens = torch.randint(0, config.vocab_size, (1, 32), device=device)
             outputs = model(ar_tokens=ar_tokens, dm_latent=latent_tensor, mode="both")
+            logits = outputs["ar_logits"]
+            predicted_class_id = torch.argmax(logits[0, -1, :7]).item()
 
         latency = time.time() - start_t
 
-        pred_task = gt_task if (idx % 4 != 0) else ((gt_task + 1) % 7)
+        pred_task = predicted_class_id % 7
         pred_name = TASK_MAPPING.get(pred_task, "Unknown")
         output_text = f"Task {pred_task}: {pred_name}"
 
-        is_correct = (pred_task is not None) and (pred_task == gt_task)
+        is_correct = (gt_task is not None) and (pred_task == gt_task)
         if is_correct:
             correct_count += 1
         total_eval += 1

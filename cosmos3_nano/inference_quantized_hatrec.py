@@ -1,7 +1,7 @@
 """
 🚀 Quantized Cosmos 3 Nano Inference Pipeline (Dynamic & Static-Frame Shortcut Test)
 Runs Quantized / Compact Cosmos 3 Nano on HATRec with exact same prompt & format constraints as Qwen2-VL.
-Strictly ensures ZERO Data Leakage: Model receives ONLY raw video pixels, without any filename/path information.
+Strictly ensures ZERO Data Leakage. Measures full batch execution time, latency, and throughput.
 Author: Antigravity AI & Research Team
 """
 
@@ -140,7 +140,7 @@ def extract_and_encode_latent(video_path: str, seq_len: int = 16, is_static: boo
     return latent_tensor
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Quantized Cosmos 3 Nano Benchmark on HATRec")
+    parser = argparse.ArgumentParser(description="Run Quantized Cosmos 3 Nano Benchmark on HATRec with Full Timing Metrics")
     parser.add_argument("--data_dir", type=str, default="/kaggle/input/datasets/ayoznur/hatrec-video-dataset", help="Path to HATRec dataset")
     parser.add_argument("--max_videos", type=int, default=546, help="Max videos to evaluate")
     parser.add_argument("--static_frame_test", action="store_true", help="Enable Static-Frame Shortcut Test")
@@ -171,11 +171,14 @@ def main():
     results = []
     correct_count = 0
     total_eval = 0
+    total_inference_time = 0.0
 
     mode_title = f"QUANTIZED COSMOS 3 NANO - {'STATIC-FRAME SHORTCUT TEST' if args.static_frame_test else 'DYNAMIC NATIVE VIDEO'}"
     print("\n" + "="*80)
     print(f"🚀 BẮT ĐẦU CHẠY EVALUATION {mode_title} TRÊN HATREC DATASET")
     print("="*80 + "\n")
+
+    batch_start_time = time.time()
 
     for idx, video_file in enumerate(video_files, 1):
         torch.cuda.empty_cache()
@@ -197,6 +200,7 @@ def main():
             predicted_class_id = torch.argmax(logits[0, -1, :7]).item()
 
         latency = time.time() - start_t
+        total_inference_time += latency
 
         pred_task = predicted_class_id % 7
         pred_name = TASK_MAPPING.get(pred_task, "Unknown")
@@ -223,12 +227,18 @@ def main():
             "raw_output": output_text
         })
 
+    total_batch_elapsed = time.time() - batch_start_time
+    avg_latency = total_inference_time / total_eval if total_eval > 0 else 0
     acc = (correct_count / total_eval * 100) if total_eval > 0 else 0
+
     print("\n" + "="*80)
-    print(f"📊 BÁO CÁO KẾT QUẢ {mode_title}:")
-    print(f"   • Tổng số Video đánh giá: {total_eval}")
-    print(f"   • Số câu trả lời ĐÚNG  : {correct_count}")
-    print(f"   • Độ chính xác (Accuracy): {acc:.2f}%")
+    print(f"📊 BÁO CÁO KẾT QUẢ VÀ THỜI GIAN CHẠY {mode_title}:")
+    print(f"   • Tổng số Video đánh giá          : {total_eval}")
+    print(f"   • Số câu trả lời ĐÚNG            : {correct_count}")
+    print(f"   • Độ chính xác (Accuracy)         : {acc:.2f}%")
+    print(f"   • Tổng thời gian chạy toàn đợt     : {total_batch_elapsed:.2f} giây ({total_batch_elapsed/60:.2f} phút)")
+    print(f"   • Thời gian suy luận tb / video   : {avg_latency*1000:.2f} ms")
+    print(f"   • Tốc độ suy luận (Throughput)    : {1.0/avg_latency:.2f} video/giây" if avg_latency > 0 else "")
     print("="*80 + "\n")
 
     with open(args.output_json, "w", encoding="utf-8") as f:
@@ -238,10 +248,13 @@ def main():
             "accuracy_percent": acc,
             "total_evaluated": total_eval,
             "correct_count": correct_count,
+            "total_batch_elapsed_seconds": total_batch_elapsed,
+            "average_latency_seconds": avg_latency,
+            "throughput_videos_per_sec": (1.0 / avg_latency if avg_latency > 0 else 0),
             "details": results
         }, f, indent=2, ensure_ascii=False)
 
-    print(f"💾 Kết quả chi tiết đã được lưu vào: '{args.output_json}'")
+    print(f"💾 Kết quả chi tiết và thời gian đã được lưu vào: '{args.output_json}'")
 
 if __name__ == "__main__":
     main()

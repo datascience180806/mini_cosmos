@@ -6,7 +6,8 @@ Features:
 - Supports Qwen2-VL-2B-Instruct and Qwen2-VL-7B-Instruct (4-bit/FP16/BF16)
 - Auto-fallback if bitsandbytes is missing
 - Standard Native Video Inference (Dynamic Motion)
-- Static-Frame Shortcut Test (--static_frame_test): Duplicates Frame 0 16 times to test for Shortcut Learning.
+- Static-Frame Shortcut Test (--static_frame_test)
+- Detailed Total Execution Time, Average Latency, and Throughput Metrics
 """
 
 import os
@@ -42,7 +43,7 @@ REVERSE_TASK_MAPPING = {
 }
 
 def parse_ground_truth(file_path: str):
-    """Bóc tách Ground Truth Task ID từ tên file/thư mục"""
+    """Bóc tách Ground Truth Task ID từ tên file/thư mục (dùng làm đáp án kiểm tra)"""
     name = Path(file_path).name.lower()
     parent = Path(file_path).parent.name.lower()
     
@@ -97,7 +98,7 @@ def create_static_frame_video(video_path: str, temp_output_path: str = "/tmp/sta
     return temp_output_path
 
 def load_qwen2_vl_model(model_id: str = "Qwen/Qwen2-VL-7B-Instruct", device: str = "cuda:0", load_in_4bit: bool = False):
-    """Tải mô hình Qwen2-VL (2B / 7B) với cơ chế tự động cài/fallback linh hoạt"""
+    """Tải mô hình Qwen2-VL với cơ chế tự động cài/fallback linh hoạt"""
     print(f"⏳ Đang tải mô hình '{model_id}' (load_in_4bit={load_in_4bit})...")
     start_time = time.time()
 
@@ -183,12 +184,12 @@ def run_qwen2_vl_video_inference(model, processor, video_path: str, prompt_text:
     return output_text
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Qwen2-VL (2B/7B) on HATRec Dataset")
+    parser = argparse.ArgumentParser(description="Run Qwen2-VL (2B/7B) on HATRec Dataset with Full Timing Metrics")
     parser.add_argument("--data_dir", type=str, default="/kaggle/input/real-world-industrial-assembly-action-dataset", help="Path to HATRec dataset")
     parser.add_argument("--model_id", type=str, default="Qwen/Qwen2-VL-7B-Instruct", help="Hugging Face Model ID")
     parser.add_argument("--load_in_4bit", action="store_true", help="Load 7B model in 4-bit NF4 to save VRAM")
     parser.add_argument("--max_videos", type=int, default=546, help="Max videos to evaluate")
-    parser.add_argument("--static_frame_test", action="store_true", help="Enable Static-Frame Shortcut Test (repeats Frame 0 16 times)")
+    parser.add_argument("--static_frame_test", action="store_true", help="Enable Static-Frame Shortcut Test")
     parser.add_argument("--output_json", type=str, default="", help="Result JSON path")
     args = parser.parse_args()
 
@@ -197,7 +198,6 @@ def main():
         mode_str = "static" if args.static_frame_test else "dynamic"
         args.output_json = f"qwen2_vl_{clean_model_tag}_{mode_str}_results.json"
 
-    # Tìm danh sách tệp video
     data_path = Path(args.data_dir)
     if not data_path.exists():
         data_path = Path("/kaggle/input/datasets/ayoznur/hatrec-video-dataset")
@@ -234,12 +234,14 @@ def main():
     results = []
     correct_count = 0
     total_eval = 0
+    total_inference_time = 0.0
 
     mode_title = f"{args.model_id} - {'STATIC-FRAME SHORTCUT TEST' if args.static_frame_test else 'DYNAMIC NATIVE VIDEO'}"
     print("\n" + "="*80)
     print(f"🚀 BẮT ĐẦU CHẠY EVALUATION {mode_title} TRÊN HATREC DATASET")
     print("="*80 + "\n")
 
+    batch_start_time = time.time()
     temp_static_video = "/tmp/static_test_frame.mp4"
 
     for idx, video_file in enumerate(video_files, 1):
@@ -265,6 +267,7 @@ def main():
             continue
 
         latency = time.time() - start_t
+        total_inference_time += latency
 
         pred_task = parse_predicted_task(output_text)
         pred_name = TASK_MAPPING.get(pred_task, "Unknown")
@@ -291,13 +294,19 @@ def main():
             "raw_output": output_text
         })
 
+    total_batch_elapsed = time.time() - batch_start_time
+    avg_latency = total_inference_time / total_eval if total_eval > 0 else 0
     acc = (correct_count / total_eval * 100) if total_eval > 0 else 0
+
     print("\n" + "="*80)
-    print(f"📊 BÁO CÁO KẾT QUẢ {mode_title}:")
-    print(f"   • Mô hình (Model)       : {args.model_id}")
-    print(f"   • Tổng số Video đánh giá: {total_eval}")
-    print(f"   • Số câu trả lời ĐÚNG  : {correct_count}")
-    print(f"   • Độ chính xác (Accuracy): {acc:.2f}%")
+    print(f"📊 BÁO CÁO KẾT QUẢ VÀ THỜI GIAN CHẠY {mode_title}:")
+    print(f"   • Mô hình (Model)                 : {args.model_id}")
+    print(f"   • Tổng số Video đánh giá          : {total_eval}")
+    print(f"   • Số câu trả lời ĐÚNG            : {correct_count}")
+    print(f"   • Độ chính xác (Accuracy)         : {acc:.2f}%")
+    print(f"   • Tổng thời gian chạy toàn đợt     : {total_batch_elapsed:.2f} giây ({total_batch_elapsed/60:.2f} phút)")
+    print(f"   • Thời gian suy luận tb / video   : {avg_latency:.2f} giây")
+    print(f"   • Tốc độ suy luận (Throughput)    : {1.0/avg_latency:.2f} video/giây" if avg_latency > 0 else "")
     print("="*80 + "\n")
 
     with open(args.output_json, "w", encoding="utf-8") as f:
@@ -307,10 +316,13 @@ def main():
             "accuracy_percent": acc,
             "total_evaluated": total_eval,
             "correct_count": correct_count,
+            "total_batch_elapsed_seconds": total_batch_elapsed,
+            "average_latency_seconds": avg_latency,
+            "throughput_videos_per_sec": (1.0 / avg_latency if avg_latency > 0 else 0),
             "details": results
         }, f, indent=2, ensure_ascii=False)
 
-    print(f"💾 Kết quả chi tiết đã được lưu vào: '{args.output_json}'")
+    print(f"💾 Kết quả chi tiết và thời gian đã được lưu vào: '{args.output_json}'")
 
 if __name__ == "__main__":
     main()

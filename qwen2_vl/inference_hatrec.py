@@ -1,7 +1,10 @@
 """
-🚀 Qwen2-VL-2B-Instruct Native Video Inference Pipeline for HATRec Dataset
+🚀 Qwen2-VL-2B-Instruct Native Video & Static-Frame Shortcut Test Pipeline for HATRec Dataset
 Author: Antigravity AI & Research Team
-Uses native qwen_vl_utils 3D-RoPE video processing to avoid repeating static outputs.
+
+Features:
+- Standard Native Video Inference (Dynamic Motion)
+- Static-Frame Shortcut Test (--static_frame_test): Duplicates Frame 0 16 times to test if model relies on temporal motion or static object co-occurrence shortcuts.
 """
 
 import os
@@ -75,6 +78,25 @@ def parse_predicted_task(text_output: str):
 
     return None
 
+def create_static_frame_video(video_path: str, temp_output_path: str = "/tmp/static_test.mp4", num_frames: int = 16):
+    """Trích xuất duy nhất Frame 0 và nhân bản 16 lần để tạo video tĩnh bị đứng hình"""
+    cap = cv2.VideoCapture(str(video_path))
+    ret, first_frame = cap.read()
+    cap.release()
+
+    if not ret or first_frame is None:
+        return None
+
+    h, w, c = first_frame.shape
+    fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+    out = cv2.VideoWriter(temp_output_path, fourcc, 1.0, (w, h))
+
+    for _ in range(num_frames):
+        out.write(first_frame)
+    out.release()
+
+    return temp_output_path
+
 def load_qwen2_vl_model(device: str = "cuda:0"):
     """Tải mô hình Qwen2-VL-2B-Instruct với tối ưu hóa FP16"""
     print("⏳ Đang tải mô hình Qwen2-VL-2B-Instruct...")
@@ -95,7 +117,7 @@ def load_qwen2_vl_model(device: str = "cuda:0"):
     return model, processor
 
 def run_qwen2_vl_video_inference(model, processor, video_path: str, prompt_text: str, device: str = "cuda:0"):
-    """Thực hiện suy luận Video chuẩn với qwen_vl_utils (Kích hoạt 3D-RoPE nhận diện chuyển động)"""
+    """Thực hiện suy luận Video với qwen_vl_utils (3D-RoPE)"""
     from qwen_vl_utils import process_vision_info
 
     messages = [
@@ -134,37 +156,45 @@ def run_qwen2_vl_video_inference(model, processor, video_path: str, prompt_text:
         generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
     )[0]
 
-    # Xóa giải phóng bộ nhớ PyTorch sau mỗi pass
     del inputs, generated_ids, generated_ids_trimmed
     torch.cuda.empty_cache()
 
     return output_text
 
 def main():
-    parser = argparse.ArgumentParser(description="Run Native Video Qwen2-VL-2B on HATRec Dataset")
+    parser = argparse.ArgumentParser(description="Run Qwen2-VL-2B on HATRec Dataset")
     parser.add_argument("--data_dir", type=str, default="/kaggle/input/real-world-industrial-assembly-action-dataset", help="Path to HATRec dataset")
-    parser.add_argument("--max_videos", type=int, default=50, help="Max videos to evaluate")
-    parser.add_argument("--output_json", type=str, default="qwen2_vl_hatrec_results.json", help="Result JSON path")
+    parser.add_argument("--max_videos", type=int, default=50, help="Max videos to evaluate (default 50 for quick test)")
+    parser.add_argument("--static_frame_test", action="store_true", help="Enable Static-Frame Shortcut Test (repeats Frame 0 16 times)")
+    parser.add_argument("--output_json", type=str, default="", help="Result JSON path")
     args = parser.parse_args()
+
+    if not args.output_json:
+        args.output_json = "qwen2_vl_static_frame_results.json" if args.static_frame_test else "qwen2_vl_hatrec_results.json"
 
     # Tìm danh sách tệp video
     data_path = Path(args.data_dir)
+    if not data_path.exists():
+        data_path = Path("/kaggle/input/datasets/ayoznur/hatrec-video-dataset")
     if not data_path.exists():
         data_path = Path("./videos")
 
     video_files = sorted(list(data_path.rglob("*.mp4")) + list(data_path.rglob("*.avi")))
     if not video_files:
-        print(f"❌ KHÔNG TÌM THẤY VIDEO TRONG: {args.data_dir} HOẶC ./videos")
+        print(f"❌ KHÔNG TÌM THẤY VIDEO TRONG BẤT KỲ THƯ MỤC NÀO!")
         sys.exit(1)
 
-    print(f"🎬 Tìm thấy tổng cộng {len(video_files)} video. Bắt đầu đánh giá (Tối đa: {args.max_videos} videos)...")
+    print(f"🎬 Tìm thấy {len(video_files)} video. Bắt đầu đánh giá (Tối đa: {args.max_videos} videos)...")
+    if args.static_frame_test:
+        print("⚠️ CHẾ ĐỘ STATIC-FRAME SHORTCUT TEST ĐÃ BẬT: Trích xuất Frame 0 lặp lại 16 lần (đứng hình) để test Shortcut Learning!")
+
     video_files = video_files[:args.max_videos]
 
     # Khởi tạo mô hình
     device = "cuda:0" if torch.cuda.is_available() else "cpu"
     model, processor = load_qwen2_vl_model(device=device)
 
-    # Câu Prompt mở đường kỹ lưỡng
+    # Câu Prompt mở đường chuẩn hóa cho 7 thao tác nhà máy
     prompt_text = (
         "You are an industrial assembly action recognition expert.\n"
         "Watch this video carefully and classify the exact assembly action being performed into one of these 7 choices:\n"
@@ -182,9 +212,12 @@ def main():
     correct_count = 0
     total_eval = 0
 
+    mode_title = "STATIC-FRAME SHORTCUT TEST (FRAME 0 REPEATED 16x)" if args.static_frame_test else "DYNAMIC NATIVE VIDEO INFERENCE"
     print("\n" + "="*80)
-    print("🚀 BẮT ĐẦU CHẠY NATIVE VIDEO EVALUATION QWEN2-VL-2B TRÊN HATREC DATASET")
+    print(f"🚀 BẮT ĐẦU CHẠY {mode_title} QWEN2-VL-2B TRÊN HATREC DATASET")
     print("="*80 + "\n")
+
+    temp_static_video = "/tmp/static_test_frame.mp4"
 
     for idx, video_file in enumerate(video_files, 1):
         torch.cuda.empty_cache()
@@ -193,10 +226,19 @@ def main():
 
         print(f"🎬 [{idx:02d}/{len(video_files)}] Video: '{video_file.name}' | Ground Truth: Task {gt_task} ({gt_name})")
 
-        # Suy luận Video trực tiếp với qwen_vl_utils (3D-RoPE)
+        # Xác định đường dẫn video sẽ nạp vào mô hình
+        if args.static_frame_test:
+            eval_video_path = create_static_frame_video(str(video_file), temp_output_path=temp_static_video, num_frames=16)
+            if not eval_video_path:
+                print("   ⚠️ Không thể tạo video tĩnh từ Frame 0. Bỏ qua.")
+                continue
+        else:
+            eval_video_path = str(video_file)
+
+        # Suy luận với Qwen2-VL
         start_t = time.time()
         try:
-            output_text = run_qwen2_vl_video_inference(model, processor, str(video_file), prompt_text, device=device)
+            output_text = run_qwen2_vl_video_inference(model, processor, eval_video_path, prompt_text, device=device)
         except Exception as e:
             print(f"   ⚠️ Lỗi suy luận video: {e}")
             continue
@@ -217,6 +259,7 @@ def main():
         results.append({
             "video": video_file.name,
             "path": str(video_file),
+            "is_static_frame_test": args.static_frame_test,
             "ground_truth_id": gt_task,
             "ground_truth_name": gt_name,
             "predicted_id": pred_task,
@@ -229,7 +272,7 @@ def main():
     # Tính toán Accuracy
     acc = (correct_count / total_eval * 100) if total_eval > 0 else 0
     print("\n" + "="*80)
-    print(f"📊 BÁO CÁO KẾT QUẢ NATIVE VIDEO QWEN2-VL-2B-INSTRUCT:")
+    print(f"📊 BÁO CÁO KẾT QUẢ {mode_title}:")
     print(f"   • Tổng số Video đánh giá: {total_eval}")
     print(f"   • Số câu trả lời ĐÚNG  : {correct_count}")
     print(f"   • Độ chính xác (Accuracy): {acc:.2f}%")
@@ -238,7 +281,8 @@ def main():
     # Lưu file kết quả JSON
     with open(args.output_json, "w", encoding="utf-8") as f:
         json.dump({
-            "model": "Qwen2-VL-2B-Instruct-NativeVideo",
+            "model": "Qwen2-VL-2B-Instruct",
+            "test_mode": mode_title,
             "accuracy_percent": acc,
             "total_evaluated": total_eval,
             "correct_count": correct_count,
